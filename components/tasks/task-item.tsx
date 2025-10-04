@@ -5,7 +5,8 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { Task } from '@/types/task';
-import { formatDateTime, isPastDate } from '@/utils/dates';
+import { formatDate, formatDateTime, isPastDate } from '@/utils/dates';
+import { parseTimeRange, stripTimeMetadata, timeRangeToFriendly } from '@/utils/time-range';
 
 interface TaskItemProps {
   task: Task;
@@ -21,9 +22,17 @@ export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemP
   const surface = useThemeColor({}, 'surfaceSecondary');
   const borderColor = useThemeColor({}, 'border');
   const danger = useThemeColor({}, 'danger');
-  const dueLabel = formatDateTime(task.due_at);
+  const isRoutine = !task.due_at;
+  const isRest = isRoutine && task.title.toLowerCase().includes('rest');
+  const dueLabel = task.due_at ? formatDate(task.due_at) : null;
   const reminderLabel = formatDateTime(task.reminder_at);
   const isOverdue = isPastDate(task.due_at) && !task.is_completed;
+  const parsedTimeRange = parseTimeRange(task.description ?? null);
+  const timeLabel = parsedTimeRange ? timeRangeToFriendly(parsedTimeRange) : null;
+  const narrativeLines = stripTimeMetadata(task.description ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
 
   return (
     <ThemedView
@@ -54,20 +63,29 @@ export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemP
           >
             {task.title}
           </ThemedText>
-          {task.description ? (
+          {narrativeLines.map((line, index) => (
             <ThemedText
-              numberOfLines={2}
+              key={`${task.id}-line-${index}`}
+              numberOfLines={index === 0 ? 2 : 1}
               style={task.is_completed ? styles.completedText : undefined}
             >
-              {task.description}
+              {line}
             </ThemedText>
-          ) : null}
+          ))}
           <View style={styles.metaRow}>
+            {timeLabel ? (
+              <ThemedText style={[styles.timeText, { color: muted }]}>{timeLabel}</ThemedText>
+            ) : null}
+            {isRoutine ? (
+              <ThemedText style={[styles.metaText, { color: isRest ? muted : tint }]}>
+                {isRest ? 'Rest block' : 'Daily routine'}
+              </ThemedText>
+            ) : null}
             {dueLabel ? (
               <ThemedText
                 style={[styles.metaText, { color: muted }, isOverdue && { color: danger }]}
               >
-                Due {dueLabel}
+                Scheduled {dueLabel}
               </ThemedText>
             ) : null}
             {reminderLabel ? (
@@ -116,6 +134,10 @@ const styles = StyleSheet.create({
   },
   metaText: {
     fontSize: 12,
+  },
+  timeText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   iconButton: {
     padding: 4,

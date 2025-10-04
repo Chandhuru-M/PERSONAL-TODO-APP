@@ -1,5 +1,3 @@
-export type TaskStatus = 'all' | 'today' | 'upcoming' | 'completed';
-
 export interface Task {
   id: string;
   title: string;

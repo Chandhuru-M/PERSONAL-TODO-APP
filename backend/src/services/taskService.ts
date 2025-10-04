@@ -1,54 +1,79 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { type Task, type TaskStatusFilter } from '../types/task.js';
+import { type Task } from '../types/task.js';
 import { type CreateTaskInput, type UpdateTaskInput } from '../validators/taskSchemas.js';
 
 const TASKS_TABLE = 'tasks';
 
-const orderBuilder = (query: any) =>
-  query
-    .order('is_completed', { ascending: true })
-    .order('due_at', { ascending: true, nullsFirst: true })
-    .order('created_at', { ascending: false });
+interface ListTaskOptions {
+  range?: {
+    start: Date;
+    end: Date;
+  };
+  includeCompleted?: boolean;
+}
+
+const compareTasks = (a: Task, b: Task): number => {
+  if (a.is_completed !== b.is_completed) {
+    return a.is_completed ? 1 : -1;
+  }
+
+  const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.NEGATIVE_INFINITY;
+  const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.NEGATIVE_INFINITY;
+
+  if (dueA !== dueB) {
+    return dueA - dueB;
+  }
+
+  const createdA = new Date(a.created_at).getTime();
+  const createdB = new Date(b.created_at).getTime();
+  return createdB - createdA;
+};
 
 export async function listTasks(
   client: SupabaseClient,
   userId: string,
-  status: TaskStatusFilter,
+  options: ListTaskOptions = {},
 ): Promise<Task[]> {
-  let query = client.from(TASKS_TABLE).select('*').eq('user_id', userId);
+  const includeCompleted = options.includeCompleted ?? false;
+  const tasks: Task[] = [];
 
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const startOfTomorrow = new Date(startOfToday);
-  startOfTomorrow.setDate(startOfToday.getDate() + 1);
+  if (options.range) {
+    let dateQuery = client
+      .from(TASKS_TABLE)
+      .select('*')
+      .eq('user_id', userId)
+      .gte('due_at', options.range.start.toISOString())
+      .lt('due_at', options.range.end.toISOString());
 
-  switch (status) {
-    case 'today':
-      query = query
-        .gte('due_at', startOfToday.toISOString())
-        .lt('due_at', startOfTomorrow.toISOString())
-        .eq('is_completed', false);
-      break;
-    case 'upcoming':
-      query = query
-        .gt('due_at', startOfTomorrow.toISOString())
-        .eq('is_completed', false);
-      break;
-    case 'completed':
-      query = query.eq('is_completed', true);
-      break;
-    default:
-      break;
+    if (!includeCompleted) {
+      dateQuery = dateQuery.eq('is_completed', false);
+    }
+
+    const { data, error } = await dateQuery;
+    if (error) throw error;
+    if (data) {
+      tasks.push(...(data as Task[]));
+    }
   }
 
-  const { data, error } = await orderBuilder(query);
+  let routineQuery = client
+    .from(TASKS_TABLE)
+    .select('*')
+    .eq('user_id', userId)
+    .is('due_at', null);
 
-  if (error) {
-    throw error;
+  if (!includeCompleted) {
+    routineQuery = routineQuery.eq('is_completed', false);
   }
 
-  return data ?? [];
+  const { data: routines, error: routineError } = await routineQuery;
+  if (routineError) throw routineError;
+  if (routines) {
+    tasks.push(...(routines as Task[]));
+  }
+
+  return tasks.sort(compareTasks);
 }
 
 export async function getTodayTasks(client: SupabaseClient, userId: string): Promise<Task[]> {
@@ -57,18 +82,13 @@ export async function getTodayTasks(client: SupabaseClient, userId: string): Pro
   const startOfTomorrow = new Date(startOfToday);
   startOfTomorrow.setDate(startOfToday.getDate() + 1);
 
-  const { data, error } = await orderBuilder(
-    client
-      .from(TASKS_TABLE)
-      .select('*')
-      .eq('user_id', userId)
-      .gte('due_at', startOfToday.toISOString())
-      .lt('due_at', startOfTomorrow.toISOString())
-      .eq('is_completed', false),
-  );
-
-  if (error) throw error;
-  return data ?? [];
+  return listTasks(client, userId, {
+    range: {
+      start: startOfToday,
+      end: startOfTomorrow,
+    },
+    includeCompleted: false,
+  });
 }
 
 export async function createTask(
@@ -83,7 +103,7 @@ export async function createTask(
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Task;
 }
 
 export async function updateTask(
@@ -101,7 +121,7 @@ export async function updateTask(
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Task;
 }
 
 export async function setTaskCompletion(
@@ -119,7 +139,7 @@ export async function setTaskCompletion(
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Task;
 }
 
 export async function deleteTask(

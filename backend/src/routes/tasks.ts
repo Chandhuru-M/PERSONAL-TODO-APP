@@ -13,7 +13,7 @@ import {
 } from '../services/taskService.js';
 import {
     createTaskSchema,
-    statusQuerySchema,
+    taskQuerySchema,
     toggleCompleteSchema,
     updateTaskSchema,
 } from '../validators/taskSchemas.js';
@@ -25,13 +25,27 @@ tasksRouter.use(requireUser);
 tasksRouter.get('/', async (req, res) => {
   try {
     const { userSupabase } = req as AuthedRequest;
-    const rawStatus = Array.isArray(req.query.status) ? req.query.status[0] : req.query.status;
-    const { status } = statusQuerySchema.parse({ status: rawStatus ?? 'all' });
+    const rawStart = Array.isArray(req.query.start) ? req.query.start[0] : req.query.start;
+    const rawEnd = Array.isArray(req.query.end) ? req.query.end[0] : req.query.end;
+    const rawIncludeCompleted = Array.isArray(req.query.includeCompleted)
+      ? req.query.includeCompleted[0]
+      : req.query.includeCompleted;
+    const { start, end, includeCompleted } = taskQuerySchema.parse({
+      start: rawStart,
+      end: rawEnd,
+      includeCompleted: rawIncludeCompleted,
+    });
+
     if (!req.userId || !userSupabase) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }
-    const tasks = await listTasks(userSupabase, req.userId, status);
+
+    const range = start && end ? { start: new Date(start), end: new Date(end) } : undefined;
+    const tasks = await listTasks(userSupabase, req.userId, {
+      range,
+      includeCompleted,
+    });
     res.json({ data: tasks });
   } catch (err) {
     handleError(err, res);

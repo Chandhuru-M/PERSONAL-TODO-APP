@@ -1,5 +1,5 @@
 import { API_ROUTES } from '@/constants/api';
-import type { Task, TaskStatus, TaskSummary } from '@/types/task';
+import type { Task, TaskSummary } from '@/types/task';
 import type { UserProfile } from '@/types/user';
 import { supabase } from './supabase';
 
@@ -33,10 +33,24 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return body.data;
 }
 
-export async function fetchTasks(status: TaskStatus = 'all'): Promise<Task[]> {
+interface FetchTasksParams {
+  start?: string;
+  end?: string;
+  includeCompleted?: boolean;
+}
+
+export async function fetchTasks(params: FetchTasksParams = {}): Promise<Task[]> {
   const headers = await withAuthHeaders();
   const url = new URL(API_ROUTES.tasks);
-  url.searchParams.set('status', status);
+  if (params.start) {
+    url.searchParams.set('start', params.start);
+  }
+  if (params.end) {
+    url.searchParams.set('end', params.end);
+  }
+  if (params.includeCompleted) {
+    url.searchParams.set('includeCompleted', String(params.includeCompleted));
+  }
 
   const response = await fetch(url.toString(), {
     headers,

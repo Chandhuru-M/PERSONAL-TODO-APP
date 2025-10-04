@@ -3,6 +3,7 @@ import { FlatList, RefreshControl, StyleSheet } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import type { Task } from '@/types/task';
+import { formatDate } from '@/utils/dates';
 import { TaskItem } from './task-item';
 
 interface TaskListProps {
@@ -13,9 +14,20 @@ interface TaskListProps {
   onToggleComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
   onDelete: (task: Task) => void;
+  selectedDate: Date;
 }
 
-export function TaskList({ tasks, loading, error, onRefresh, onToggleComplete, onEdit, onDelete }: TaskListProps) {
+export function TaskList({
+  tasks,
+  loading,
+  error,
+  onRefresh,
+  onToggleComplete,
+  onEdit,
+  onDelete,
+  selectedDate,
+}: TaskListProps) {
+  const dayLabel = formatDate(selectedDate, { weekday: 'long' }) ?? 'that day';
   return (
     <FlatList
       data={tasks}
@@ -35,8 +47,10 @@ export function TaskList({ tasks, loading, error, onRefresh, onToggleComplete, o
               </>
             ) : (
               <>
-                <ThemedText type="subtitle">No tasks yet</ThemedText>
-                <ThemedText>Tap the + button to add your first task.</ThemedText>
+                <ThemedText type="subtitle">Nothing scheduled</ThemedText>
+                <ThemedText>
+                  {`You haven't planned anything for ${dayLabel}. Use the buttons below to add a task or a daily routine.`}
+                </ThemedText>
               </>
             )}
           </ThemedView>

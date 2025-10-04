@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { SchedulableNotificationTriggerInput } from 'expo-notifications';
+import Constants from 'expo-constants';
+import type { NotificationTriggerInput } from 'expo-notifications';
 import * as Notifications from 'expo-notifications';
 import { SchedulableTriggerInputTypes } from 'expo-notifications';
 import { Platform } from 'react-native';
@@ -14,6 +15,11 @@ interface ReminderMap {
 }
 
 async function ensurePermissionsAsync(): Promise<boolean> {
+  if (!Constants.executionEnvironment || Constants.executionEnvironment === 'storeClient') {
+    console.warn('Notifications limited inside Expo Go. Skipping permission prompt.');
+    return false;
+  }
+
   const settings = await Notifications.getPermissionsAsync();
   if (settings.granted || settings.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL) {
     await configureAndroidChannels();
@@ -73,28 +79,44 @@ export async function requestNotificationPermissions(): Promise<boolean> {
   return ensurePermissionsAsync();
 }
 
+interface ReminderOptions {
+  repeatDaily?: boolean;
+}
+
 export async function scheduleTaskReminder(
   taskId: string,
   title: string,
   reminderDate: Date,
+  options: ReminderOptions = {},
 ): Promise<void> {
   const permitted = await ensurePermissionsAsync();
   if (!permitted) {
     throw new Error('Notifications permission not granted');
   }
 
-  if (reminderDate.getTime() <= Date.now()) {
-    console.warn('Skipping reminder scheduling in the past');
-    return;
-  }
-
   await cancelTaskReminder(taskId);
 
-  const trigger: SchedulableNotificationTriggerInput = {
-    type: SchedulableTriggerInputTypes.DATE,
-    date: reminderDate,
-    ...(Platform.OS === 'android' ? { channelId: REMINDER_CHANNEL_ID } : {}),
-  };
+  let trigger: NotificationTriggerInput;
+
+  if (options.repeatDaily) {
+    trigger = {
+      type: SchedulableTriggerInputTypes.DAILY,
+      hour: reminderDate.getHours(),
+      minute: reminderDate.getMinutes(),
+      ...(Platform.OS === 'android' ? { channelId: REMINDER_CHANNEL_ID } : {}),
+    };
+  } else {
+    if (reminderDate.getTime() <= Date.now()) {
+      console.warn('Skipping reminder scheduling in the past');
+      return;
+    }
+
+    trigger = {
+      type: SchedulableTriggerInputTypes.DATE,
+      date: reminderDate,
+      ...(Platform.OS === 'android' ? { channelId: REMINDER_CHANNEL_ID } : {}),
+    };
+  }
 
   const notificationId = await Notifications.scheduleNotificationAsync({
     content: {

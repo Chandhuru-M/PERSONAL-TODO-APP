@@ -9,5 +9,3 @@ export interface Task {
   created_at: string;
   updated_at: string;
 }
-
-export type TaskStatusFilter = 'all' | 'today' | 'upcoming' | 'completed';

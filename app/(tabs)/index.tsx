@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { TaskFilter } from '@/components/tasks/task-filter';
+import { TaskCalendar } from '@/components/tasks/task-calendar';
 import { TaskFormModal, type TaskFormValues } from '@/components/tasks/task-form-modal';
 import { TaskList } from '@/components/tasks/task-list';
 import { ThemedText } from '@/components/themed-text';
@@ -13,6 +13,7 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 import { useTasks } from '@/hooks/useTasks';
 import { requestNotificationPermissions } from '@/lib/notifications';
 import type { Task } from '@/types/task';
+import { startOfDay } from '@/utils/dates';
 
 export default function HomeScreen() {
   const { user, signOut } = useAuth();
@@ -22,10 +23,12 @@ export default function HomeScreen() {
   const muted = useThemeColor({}, 'muted');
   const onAccent = useThemeColor({}, 'onTint');
   const {
-    status,
-    setStatus,
-    currentState,
-    refreshStatus,
+    selectedDate,
+    setSelectedDate,
+    tasks,
+    loading,
+    error,
+    refresh,
     createTask,
     updateTask,
     toggleComplete,
@@ -35,6 +38,7 @@ export default function HomeScreen() {
   const [isModalVisible, setModalVisible] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [formMode, setFormMode] = useState<'task' | 'routine'>('task');
 
   const handleSignOut = async () => {
     try {
@@ -45,13 +49,20 @@ export default function HomeScreen() {
     }
   };
 
-  const openCreateModal = () => {
+  const openCreateModal = (mode: 'task' | 'routine') => {
     setSelectedTask(null);
+    setFormMode(mode);
     setModalVisible(true);
   };
 
   const openEditModal = (task: Task) => {
     setSelectedTask(task);
+    if (task.due_at) {
+      setSelectedDate(startOfDay(new Date(task.due_at)));
+      setFormMode('task');
+    } else {
+      setFormMode('routine');
+    }
     setModalVisible(true);
   };
 
@@ -100,24 +111,39 @@ export default function HomeScreen() {
           </Pressable>
         </View>
 
-        <TaskFilter value={status} onChange={(next) => setStatus(next)} />
+        <TaskCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} />
 
         <TaskList
-          tasks={currentState.tasks}
-          loading={currentState.loading}
-          error={currentState.error}
+          tasks={tasks}
+          loading={loading}
+          error={error}
           onRefresh={() => {
-            void refreshStatus(status);
+            void refresh();
           }}
           onToggleComplete={handleToggleComplete}
           onEdit={openEditModal}
           onDelete={handleDeleteTask}
+          selectedDate={selectedDate}
         />
 
-        <Pressable style={[styles.fab, { backgroundColor: accent }]} onPress={openCreateModal} accessibilityRole="button">
-          <MaterialIcons name="add" size={28} color={onAccent} />
-          <ThemedText style={[styles.fabLabel, { color: onAccent }]}>Task</ThemedText>
-        </Pressable>
+        <View style={styles.fabStack}>
+          <Pressable
+            style={[styles.fab, styles.secondaryFab, { borderColor: accent }]}
+            onPress={() => openCreateModal('routine')}
+            accessibilityRole="button"
+          >
+            <MaterialIcons name="repeat" size={24} color={accent} />
+            <ThemedText style={[styles.fabLabel, { color: accent }]}>Routine</ThemedText>
+          </Pressable>
+          <Pressable
+            style={[styles.fab, { backgroundColor: accent }]}
+            onPress={() => openCreateModal('task')}
+            accessibilityRole="button"
+          >
+            <MaterialIcons name="add" size={28} color={onAccent} />
+            <ThemedText style={[styles.fabLabel, { color: onAccent }]}>Task</ThemedText>
+          </Pressable>
+        </View>
 
         <TaskFormModal
           visible={isModalVisible}
@@ -125,6 +151,8 @@ export default function HomeScreen() {
           onSubmit={handleSubmit}
           submitting={submitting}
           task={selectedTask}
+          selectedDate={selectedTask?.due_at ? startOfDay(new Date(selectedTask.due_at)) : selectedDate}
+          mode={formMode}
         />
       </ThemedView>
     </SafeAreaView>
@@ -149,10 +177,13 @@ const styles = StyleSheet.create({
   subtitle: {
     opacity: 0.7,
   },
-  fab: {
+  fabStack: {
     position: 'absolute',
     right: 24,
     bottom: 32,
+    gap: 12,
+  },
+  fab: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -167,5 +198,13 @@ const styles = StyleSheet.create({
   },
   fabLabel: {
     fontWeight: '600',
+  },
+  secondaryFab: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 0,
   },
 });

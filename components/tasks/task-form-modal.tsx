@@ -1,6 +1,6 @@
 import type { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Modal,
@@ -16,7 +16,14 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { Task } from '@/types/task';
-import { formatDateTime, formatTime } from '@/utils/dates';
+import { formatDate, formatDateTime, formatTime, startOfDay } from '@/utils/dates';
+import {
+  datesToTimeRange,
+  injectTimeMetadata,
+  minutesToDate,
+  parseTimeRange,
+  stripTimeMetadata,
+} from '@/utils/time-range';
 
 export interface TaskFormValues {
   title: string;
@@ -31,12 +38,23 @@ interface TaskFormModalProps {
   onSubmit: (values: TaskFormValues, existingTask?: Task) => Promise<void>;
   submitting: boolean;
   task?: Task | null;
+  selectedDate: Date;
+  mode: 'task' | 'routine';
 }
 
-export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: TaskFormModalProps) {
+export function TaskFormModal({
+  visible,
+  onClose,
+  onSubmit,
+  submitting,
+  task,
+  selectedDate,
+  mode,
+}: TaskFormModalProps) {
   const [title, setTitle] = useState(task?.title ?? '');
-  const [description, setDescription] = useState(task?.description ?? '');
-  const [dueDate, setDueDate] = useState<Date | null>(task?.due_at ? new Date(task.due_at) : null);
+  const [description, setDescription] = useState(() =>
+    mode === 'task' ? stripTimeMetadata(task?.description ?? '') : task?.description ?? '',
+  );
   const [reminderEnabled, setReminderEnabled] = useState(Boolean(task?.reminder_at));
   const [reminderDate, setReminderDate] = useState<Date | null>(
     task?.reminder_at ? new Date(task.reminder_at) : null,
@@ -50,35 +68,120 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
   const tint = useThemeColor({}, 'tint');
   const onTint = useThemeColor({}, 'onTint');
 
-  const isEditing = Boolean(task);
+  const defaultTaskStart = useCallback(() => {
+    const base = new Date(selectedDate);
+    base.setHours(9, 0, 0, 0);
+    return base;
+  }, [selectedDate]);
 
-  useEffect(() => {
-    setTitle(task?.title ?? '');
-    setDescription(task?.description ?? '');
-    setDueDate(task?.due_at ? new Date(task.due_at) : null);
-    setReminderEnabled(Boolean(task?.reminder_at));
-    setReminderDate(task?.reminder_at ? new Date(task.reminder_at) : null);
-  }, [task, visible]);
+  const defaultTaskEnd = useCallback(
+    (base?: Date) => {
+      const reference = base ? new Date(base) : defaultTaskStart();
+      reference.setMinutes(reference.getMinutes() + 60);
+      return reference;
+    },
+    [defaultTaskStart],
+  );
+
+  const ensureEndAfterStart = useCallback((start: Date, candidate: Date) => {
+    if (candidate <= start) {
+      const next = new Date(start);
+      next.setMinutes(next.getMinutes() + 30);
+      return next;
+    }
+    return candidate;
+  }, []);
+
+  const [startTime, setStartTime] = useState<Date>(() => defaultTaskStart());
+  const [endTime, setEndTime] = useState<Date>(() => defaultTaskEnd());
+
+  const isEditing = Boolean(task);
+  const titleLabel = isEditing
+    ? mode === 'routine'
+      ? 'Edit routine'
+      : 'Edit task'
+    : mode === 'routine'
+    ? 'Create routine'
+    : 'Create task';
 
   const closeAndReset = () => {
     onClose();
   };
 
-  const showPicker = (mode: 'date' | 'time', currentDate: Date | null, onChange: (date: Date) => void) => {
+  const defaultReminderDate = useCallback(() => {
+    const base = new Date(selectedDate);
+    const now = new Date();
+    base.setHours(now.getHours(), now.getMinutes(), 0, 0);
+    base.setMinutes(base.getMinutes() + 15);
+    return base;
+  }, [selectedDate]);
+
+  useEffect(() => {
+    setTitle(task?.title ?? '');
+    const rawDescription = task?.description ?? '';
+
+    if (mode === 'task') {
+      setDescription(stripTimeMetadata(rawDescription));
+      const parsedRange = parseTimeRange(rawDescription);
+      if (parsedRange) {
+        const start = minutesToDate(parsedRange.startMinutes, selectedDate);
+        const end = minutesToDate(parsedRange.endMinutes, selectedDate);
+        setStartTime(start);
+        setEndTime(ensureEndAfterStart(start, end));
+      } else {
+        const start = defaultTaskStart();
+        setStartTime(start);
+        setEndTime(defaultTaskEnd(start));
+      }
+    } else {
+      setDescription(rawDescription);
+    }
+
+    if (task?.reminder_at) {
+      setReminderEnabled(true);
+      setReminderDate(new Date(task.reminder_at));
+      return;
+    }
+
+    if (!task && mode === 'routine') {
+      setReminderEnabled(true);
+      setReminderDate(defaultReminderDate());
+      return;
+    }
+
+    setReminderEnabled(false);
+    setReminderDate(null);
+  }, [
+    task,
+    visible,
+    mode,
+    selectedDate,
+    defaultTaskStart,
+    defaultTaskEnd,
+    ensureEndAfterStart,
+    defaultReminderDate,
+  ]);
+
+  const showPicker = (
+    pickerMode: 'date' | 'time',
+    currentDate: Date | null,
+    onChange: (date: Date) => void,
+  ) => {
+    const baseDate = currentDate ?? (pickerMode === 'date' ? selectedDate : defaultReminderDate());
+
     if (Platform.OS === 'android') {
-      const baseDate = currentDate ?? new Date();
       DateTimePickerAndroid.open({
         value: baseDate,
-        mode,
+        mode: pickerMode,
         onChange: (_event: DateTimePickerEvent, date?: Date) => {
           if (date) onChange(date);
         },
-        minimumDate: new Date(),
+        minimumDate: selectedDate,
       });
       return;
     }
 
-    setInlinePicker({ mode, onChange, value: currentDate ?? new Date() });
+    setInlinePicker({ mode: pickerMode, onChange, value: baseDate });
   };
 
   const [inlinePicker, setInlinePicker] = useState<
@@ -99,12 +202,20 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
     }
   };
 
-  const buildPayload = (): TaskFormValues => ({
-    title: title.trim(),
-    description: description.trim() ? description.trim() : null,
-    due_at: dueDate ? dueDate.toISOString() : null,
-    reminder_at: reminderEnabled && reminderDate ? reminderDate.toISOString() : null,
-  });
+  const buildPayload = (): TaskFormValues => {
+    const trimmedDescription = description.trim();
+    const preparedDescription =
+      mode === 'task'
+        ? injectTimeMetadata(trimmedDescription, datesToTimeRange(startTime, endTime))
+        : trimmedDescription || null;
+
+    return {
+      title: title.trim(),
+      description: preparedDescription,
+      due_at: mode === 'routine' ? null : startOfDay(selectedDate).toISOString(),
+      reminder_at: reminderEnabled && reminderDate ? reminderDate.toISOString() : null,
+    };
+  };
 
   const handleSubmit = async () => {
     const payload = buildPayload();
@@ -112,9 +223,13 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
     if (!task) {
       setTitle('');
       setDescription('');
-      setDueDate(null);
       setReminderEnabled(false);
       setReminderDate(null);
+      if (mode === 'task') {
+        const start = defaultTaskStart();
+        setStartTime(start);
+        setEndTime(defaultTaskEnd(start));
+      }
     }
     onClose();
   };
@@ -122,13 +237,24 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
   const handleReminderToggle = (value: boolean) => {
     setReminderEnabled(value);
     if (value && !reminderDate) {
-      const next = dueDate ?? new Date();
-      next.setMinutes(next.getMinutes() + 15);
-      setReminderDate(next);
+      setReminderDate(defaultReminderDate());
     }
     if (!value) {
       setReminderDate(null);
     }
+  };
+
+  const updateStartTime = (date: Date) => {
+    const next = new Date(selectedDate);
+    next.setHours(date.getHours(), date.getMinutes(), 0, 0);
+    setStartTime(next);
+    setEndTime((prev) => ensureEndAfterStart(next, prev));
+  };
+
+  const updateEndTime = (date: Date) => {
+    const next = new Date(selectedDate);
+    next.setHours(date.getHours(), date.getMinutes(), 0, 0);
+    setEndTime(ensureEndAfterStart(startTime, next));
   };
 
   const pickerButtonStyle = [styles.pickerButton, { borderColor, backgroundColor: surfaceMuted }];
@@ -152,7 +278,7 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
         style={[styles.flex, { backgroundColor: background }]}
       >
         <ScrollView contentContainerStyle={[styles.content, { backgroundColor: surface }]}>
-          <ThemedText type="title">{isEditing ? 'Edit task' : 'Create task'}</ThemedText>
+          <ThemedText type="title">{titleLabel}</ThemedText>
           <View style={styles.field}>
             <ThemedText type="subtitle">Title</ThemedText>
             <TextInput
@@ -175,26 +301,32 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
             />
           </View>
           <View style={styles.field}>
-            <ThemedText type="subtitle">Due date</ThemedText>
-            <View style={styles.row}>
-              <Pressable style={pickerButtonStyle} onPress={() => showPicker('date', dueDate, setDueDate)}>
-                <ThemedText>{dueDate ? formatDateTime(dueDate) : 'Select date'}</ThemedText>
-              </Pressable>
-              <Pressable
-                style={pickerButtonStyle}
-                onPress={() => showPicker('time', dueDate ?? new Date(), (date) => {
-                  setDueDate((prev) => {
-                    const base = prev ?? new Date();
-                    base.setHours(date.getHours(), date.getMinutes(), 0, 0);
-                    return new Date(base);
-                  });
-                })}
-                disabled={!dueDate}
-              >
-                <ThemedText>{dueDate ? formatTime(dueDate) ?? 'Select time' : 'Select time'}</ThemedText>
-              </Pressable>
-            </View>
+            <ThemedText type="subtitle">Scheduled day</ThemedText>
+            <ThemedText style={{ color: mutedColor }}>
+              {mode === 'routine'
+                ? 'Repeats every day'
+                : formatDate(selectedDate, { weekday: 'long' }) ?? 'Select a day'}
+            </ThemedText>
           </View>
+          {mode === 'task' ? (
+            <View style={styles.field}>
+              <ThemedText type="subtitle">Time</ThemedText>
+              <View style={styles.row}>
+                <Pressable
+                  style={pickerButtonStyle}
+                  onPress={() => showPicker('time', startTime, updateStartTime)}
+                >
+                  <ThemedText>{formatTime(startTime) ?? 'Start time'}</ThemedText>
+                </Pressable>
+                <Pressable
+                  style={pickerButtonStyle}
+                  onPress={() => showPicker('time', endTime, updateEndTime)}
+                >
+                  <ThemedText>{formatTime(endTime) ?? 'End time'}</ThemedText>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
           <View style={styles.field}>
             <View style={styles.rowBetween}>
               <ThemedText type="subtitle">Reminder</ThemedText>
@@ -207,21 +339,23 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
             </View>
             {reminderEnabled ? (
               <View style={styles.row}>
-                <Pressable style={pickerButtonStyle} onPress={() => showPicker('date', reminderDate, setReminderDate)}>
+                <Pressable
+                  style={pickerButtonStyle}
+                  onPress={() => showPicker('date', reminderDate, setReminderDate)}
+                >
                   <ThemedText>{reminderDate ? formatDateTime(reminderDate) : 'Select date'}</ThemedText>
                 </Pressable>
                 <Pressable
                   style={pickerButtonStyle}
                   onPress={() =>
-                    showPicker('time', reminderDate ?? new Date(), (date) => {
+                    showPicker('time', reminderDate, (date) => {
                       setReminderDate((prev) => {
-                        const base = prev ?? new Date();
+                        const base = prev ?? defaultReminderDate();
                         base.setHours(date.getHours(), date.getMinutes(), 0, 0);
                         return new Date(base);
                       });
                     })
                   }
-                  disabled={!reminderDate}
                 >
                   <ThemedText>{reminderDate ? formatTime(reminderDate) ?? 'Select time' : 'Select time'}</ThemedText>
                 </Pressable>
@@ -241,8 +375,8 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
             onPress={handleSubmit}
             disabled={submitting || !title.trim()}
           >
-            <ThemedText style={[styles.primaryLabel, { color: onTint }]}>
-              {submitting ? 'Saving...' : isEditing ? 'Update' : 'Create'}
+            <ThemedText style={[styles.primaryLabel, { color: onTint }]}> 
+              {submitting ? 'Saving...' : isEditing ? 'Update' : mode === 'routine' ? 'Create routine' : 'Create'}
             </ThemedText>
           </Pressable>
         </View>
@@ -252,7 +386,7 @@ export function TaskFormModal({ visible, onClose, onSubmit, submitting, task }: 
             mode={inlinePicker.mode}
             display={Platform.OS === 'ios' ? 'inline' : 'default'}
             onChange={commitInlinePicker}
-            minimumDate={new Date()}
+            minimumDate={selectedDate}
           />
         ) : null}
       </KeyboardAvoidingView>

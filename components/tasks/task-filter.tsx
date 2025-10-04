@@ -2,9 +2,8 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { useThemeColor } from '@/hooks/use-theme-color';
-import type { TaskStatus } from '@/types/task';
 
-type FilterStatus = Exclude<TaskStatus, 'all'>;
+type FilterStatus = 'today' | 'upcoming' | 'completed';
 
 interface TaskFilterProps {
   value: FilterStatus;

@@ -11,9 +11,22 @@ export const createTaskSchema = z.object({
 
 export const updateTaskSchema = createTaskSchema.partial();
 
-export const statusQuerySchema = z.object({
-  status: z.enum(['all', 'today', 'upcoming', 'completed']).default('all'),
-});
+const booleanLike = z
+  .union([z.literal('true'), z.literal('false')])
+  .optional()
+  .transform((value) => value === 'true');
+
+export const taskQuerySchema = z
+  .object({
+    start: z.string().datetime({ offset: true }).optional(),
+    end: z.string().datetime({ offset: true }).optional(),
+    includeCompleted: booleanLike,
+  })
+  .transform(({ start, end, includeCompleted }) => ({
+    start,
+    end,
+    includeCompleted: includeCompleted ?? false,
+  }));
 
 export const toggleCompleteSchema = z.object({
   is_completed: z.boolean(),
@@ -21,5 +34,5 @@ export const toggleCompleteSchema = z.object({
 
 export type CreateTaskInput = z.infer<typeof createTaskSchema>;
 export type UpdateTaskInput = z.infer<typeof updateTaskSchema>;
-export type StatusQueryInput = z.infer<typeof statusQuerySchema>;
+export type TaskQueryInput = z.infer<typeof taskQuerySchema>;
 export type ToggleCompleteInput = z.infer<typeof toggleCompleteSchema>;

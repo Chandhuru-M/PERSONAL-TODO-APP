@@ -1,98 +1,171 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
+import { useEffect, useState } from 'react';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
+import { TaskFilter } from '@/components/tasks/task-filter';
+import { TaskFormModal, type TaskFormValues } from '@/components/tasks/task-form-modal';
+import { TaskList } from '@/components/tasks/task-list';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { useAuth } from '@/contexts/AuthContext';
+import { useThemeColor } from '@/hooks/use-theme-color';
+import { useTasks } from '@/hooks/useTasks';
+import { requestNotificationPermissions } from '@/lib/notifications';
+import type { Task } from '@/types/task';
 
 export default function HomeScreen() {
-  return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+  const { user, signOut } = useAuth();
+  const background = useThemeColor({}, 'background');
+  const surface = useThemeColor({}, 'surface');
+  const accent = useThemeColor({}, 'tint');
+  const muted = useThemeColor({}, 'muted');
+  const onAccent = useThemeColor({}, 'onTint');
+  const {
+    status,
+    setStatus,
+    currentState,
+    refreshStatus,
+    createTask,
+    updateTask,
+    toggleComplete,
+    deleteTask,
+  } = useTasks();
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
+  const [isModalVisible, setModalVisible] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to sign out';
+      Alert.alert('Sign out failed', message);
+    }
+  };
+
+  const openCreateModal = () => {
+    setSelectedTask(null);
+    setModalVisible(true);
+  };
+
+  const openEditModal = (task: Task) => {
+    setSelectedTask(task);
+    setModalVisible(true);
+  };
+
+  const handleSubmit = async (values: TaskFormValues, existingTask?: Task) => {
+    try {
+      setSubmitting(true);
+      if (existingTask) {
+        await updateTask(existingTask.id, values);
+      } else {
+        await createTask(values);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleToggleComplete = async (task: Task) => {
+    await toggleComplete(task.id, !task.is_completed);
+  };
+
+  const handleDeleteTask = async (task: Task) => {
+    await deleteTask(task.id);
+  };
+
+  useEffect(() => {
+    requestNotificationPermissions().catch((err) =>
+      console.warn('Notification permissions request failed', err),
+    );
+  }, []);
+
+  return (
+    <SafeAreaView
+      style={[styles.safeArea, { backgroundColor: background }]}
+      edges={['top', 'left', 'right']}
+    >
+      <ThemedView lightColor={surface} darkColor={surface} style={styles.container}>
+        <View style={styles.header}>
+          <View>
+            <ThemedText type="title">Today&apos;s focus</ThemedText>
+            <ThemedText style={[styles.subtitle, { color: muted }]}>
+              {user ? `Logged in as ${user.email}` : 'Plan your tasks and stay on track.'}
+            </ThemedText>
+          </View>
+          <Pressable onPress={handleSignOut} accessibilityRole="button">
+            <MaterialIcons name="logout" size={24} color={accent} />
+          </Pressable>
+        </View>
+
+        <TaskFilter value={status} onChange={(next) => setStatus(next)} />
+
+        <TaskList
+          tasks={currentState.tasks}
+          loading={currentState.loading}
+          error={currentState.error}
+          onRefresh={() => {
+            void refreshStatus(status);
+          }}
+          onToggleComplete={handleToggleComplete}
+          onEdit={openEditModal}
+          onDelete={handleDeleteTask}
+        />
+
+        <Pressable style={[styles.fab, { backgroundColor: accent }]} onPress={openCreateModal} accessibilityRole="button">
+          <MaterialIcons name="add" size={28} color={onAccent} />
+          <ThemedText style={[styles.fabLabel, { color: onAccent }]}>Task</ThemedText>
+        </Pressable>
+
+        <TaskFormModal
+          visible={isModalVisible}
+          onClose={() => setModalVisible(false)}
+          onSubmit={handleSubmit}
+          submitting={submitting}
+          task={selectedTask}
+        />
       </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  safeArea: {
+    flex: 1,
+  },
+  container: {
+    flex: 1,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  subtitle: {
+    opacity: 0.7,
+  },
+  fab: {
+    position: 'absolute',
+    right: 24,
+    bottom: 32,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    borderRadius: 999,
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
-  },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  fabLabel: {
+    fontWeight: '600',
   },
 });

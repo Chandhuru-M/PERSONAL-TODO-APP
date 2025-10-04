@@ -1,0 +1,4 @@
+supabase db password: Chandhuru@2005
+
+url https://tobxfkaudeagqetsxxyn.supabase.co
+api key : eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvYnhma2F1ZGVhZ3FldHN4eHluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk0OTA3MzgsImV4cCI6MjA3NTA2NjczOH0.7NNo4zTiM4OCJoL3NImk9iocsLvGcEAdDbqt8BHKYj8

@@ -1,6 +1,6 @@
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { useThemeColor } from '@/hooks/use-theme-color';
@@ -50,6 +50,9 @@ export function TaskCalendar({ selectedDate, onSelectDate }: TaskCalendarProps) 
 
   const days = useMemo(() => Array.from({ length: DAYS_IN_WEEK }, (_, index) => addDays(anchorDate, index)), [anchorDate]);
 
+  const today = startOfDay(new Date());
+  const yesterday = addDays(today, -1);
+
   const monthLabel = useMemo(() => {
     return new Intl.DateTimeFormat(undefined, {
       month: 'long',
@@ -95,25 +98,33 @@ export function TaskCalendar({ selectedDate, onSelectDate }: TaskCalendarProps) 
           <ThemedText style={{ color: text }}>{'›'}</ThemedText>
         </Pressable>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.weekRow}>
+      <View style={styles.weekRow}>
         {days.map((day) => {
           const active = isSameDay(day, selectedDate);
+          const isHistorical = day < yesterday;
+          const weekdayColor = active ? onTint : muted;
+          const dayNumberColor = isHistorical && !active ? muted : active ? onTint : text;
+          const cardStyle = [
+            styles.dayCard,
+            isHistorical && !active && styles.historicDay,
+            { borderColor: border, backgroundColor: active ? tint : surface },
+          ];
           return (
             <Pressable
               key={day.toISOString()}
-              style={[styles.dayCard, { borderColor: border, backgroundColor: active ? tint : surface }]}
+              style={cardStyle}
               onPress={() => onSelectDate(startOfDay(day))}
             >
-              <ThemedText style={[styles.weekday, { color: active ? onTint : muted }]}>
+              <ThemedText style={[styles.weekday, { color: weekdayColor }]}>
                 {new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(day)}
               </ThemedText>
-              <ThemedText style={[styles.dayNumber, { color: active ? onTint : text }]}>
+              <ThemedText style={[styles.dayNumber, { color: dayNumberColor }]}>
                 {day.getDate()}
               </ThemedText>
             </Pressable>
           );
         })}
-      </ScrollView>
+      </View>
       <Pressable accessibilityRole="button" onPress={handlePickDate} style={[styles.pickButton, { borderColor: border }]}
       >
         <ThemedText style={{ color: text }}>Pick a date</ThemedText>
@@ -150,23 +161,31 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   weekRow: {
-    columnGap: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
   },
   dayCard: {
-    width: 64,
+    flex: 1,
+    minWidth: 0,
     borderRadius: 16,
     borderWidth: 1,
-    paddingVertical: 12,
+    paddingVertical: 8,
     alignItems: 'center',
     gap: 4,
+    paddingHorizontal: 2,
+  },
+  historicDay: {
+    opacity: 0.55,
   },
   weekday: {
-    fontSize: 12,
+    fontSize: 11,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   dayNumber: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
   },
   pickButton: {

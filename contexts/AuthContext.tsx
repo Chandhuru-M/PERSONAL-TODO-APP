@@ -11,7 +11,7 @@ interface AuthContextValue {
   user: User | null;
   profile: UserProfile | null;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string) => Promise<User | null>;
   signOut: () => Promise<void>;
 }
 
@@ -97,11 +97,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const { data, error } = await supabase.auth.signUp({ email: trimmedEmail, password });
         if (error) throw error;
 
+        let resolvedUser: User | null = data.user ?? null;
         const sessionFromSignUp = data.session ?? null;
         if (sessionFromSignUp) {
           setSession(sessionFromSignUp);
-          setUser(sessionFromSignUp.user ?? null);
-          return;
+          const newUser = sessionFromSignUp.user ?? resolvedUser;
+          setUser(newUser ?? null);
+          return newUser ?? resolvedUser;
         }
 
         if (data.user) {
@@ -113,9 +115,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
           if (signInData.session) {
             setSession(signInData.session);
-            setUser(signInData.session.user ?? null);
+            const signedInUser = signInData.session.user ?? data.user ?? null;
+            resolvedUser = signedInUser;
+            setUser(signedInUser);
+            return signedInUser;
           }
         }
+
+        if (resolvedUser) {
+          setUser((prev) => prev ?? resolvedUser);
+        }
+
+        return resolvedUser;
       },
       signOut: async () => {
         const { error } = await supabase.auth.signOut();

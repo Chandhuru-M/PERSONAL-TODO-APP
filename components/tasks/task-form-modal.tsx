@@ -1,28 +1,30 @@
+import { MaterialIcons } from '@expo/vector-icons';
 import type { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  TextInput,
-  View,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    TextInput,
+    View,
 } from 'react-native';
 
+import { TaskTimeModal } from '@/components/tasks/task-time-modal';
 import { ThemedText } from '@/components/themed-text';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import { Task } from '@/types/task';
 import { formatDate, formatDateTime, formatTime, startOfDay } from '@/utils/dates';
 import {
-  datesToTimeRange,
-  injectTimeMetadata,
-  minutesToDate,
-  parseTimeRange,
-  stripTimeMetadata,
+    datesToTimeRange,
+    injectTimeMetadata,
+    minutesToDate,
+    parseTimeRange,
+    stripTimeMetadata,
 } from '@/utils/time-range';
 
 export interface TaskFormValues {
@@ -52,9 +54,7 @@ export function TaskFormModal({
   mode,
 }: TaskFormModalProps) {
   const [title, setTitle] = useState(task?.title ?? '');
-  const [description, setDescription] = useState(() =>
-    mode === 'task' ? stripTimeMetadata(task?.description ?? '') : task?.description ?? '',
-  );
+  const [description, setDescription] = useState(() => stripTimeMetadata(task?.description ?? ''));
   const [reminderEnabled, setReminderEnabled] = useState(Boolean(task?.reminder_at));
   const [reminderDate, setReminderDate] = useState<Date | null>(
     task?.reminder_at ? new Date(task.reminder_at) : null,
@@ -94,6 +94,7 @@ export function TaskFormModal({
 
   const [startTime, setStartTime] = useState<Date>(() => defaultTaskStart());
   const [endTime, setEndTime] = useState<Date>(() => defaultTaskEnd());
+  const [isTimeModalVisible, setTimeModalVisible] = useState(false);
 
   const isEditing = Boolean(task);
   const titleLabel = isEditing
@@ -105,6 +106,7 @@ export function TaskFormModal({
     : 'Create task';
 
   const closeAndReset = () => {
+    setTimeModalVisible(false);
     onClose();
   };
 
@@ -119,22 +121,19 @@ export function TaskFormModal({
   useEffect(() => {
     setTitle(task?.title ?? '');
     const rawDescription = task?.description ?? '';
+    const sanitized = stripTimeMetadata(rawDescription);
+    setDescription(sanitized);
 
-    if (mode === 'task') {
-      setDescription(stripTimeMetadata(rawDescription));
-      const parsedRange = parseTimeRange(rawDescription);
-      if (parsedRange) {
-        const start = minutesToDate(parsedRange.startMinutes, selectedDate);
-        const end = minutesToDate(parsedRange.endMinutes, selectedDate);
-        setStartTime(start);
-        setEndTime(ensureEndAfterStart(start, end));
-      } else {
-        const start = defaultTaskStart();
-        setStartTime(start);
-        setEndTime(defaultTaskEnd(start));
-      }
+    const parsedRange = parseTimeRange(rawDescription);
+    if (parsedRange) {
+      const start = minutesToDate(parsedRange.startMinutes, selectedDate);
+      const end = minutesToDate(parsedRange.endMinutes, selectedDate);
+      setStartTime(start);
+      setEndTime(ensureEndAfterStart(start, end));
     } else {
-      setDescription(rawDescription);
+      const start = defaultTaskStart();
+      setStartTime(start);
+      setEndTime(defaultTaskEnd(start));
     }
 
     if (task?.reminder_at) {
@@ -202,12 +201,31 @@ export function TaskFormModal({
     }
   };
 
+  const openTimeModal = () => {
+    setTimeModalVisible(true);
+  };
+
+  const handleTimeModalSubmit = async ({ start, end }: { start: Date; end: Date }) => {
+    if (reminderEnabled && reminderDate) {
+      const previousStartMinute = Math.floor(startTime.getTime() / 60000);
+      const reminderMinute = Math.floor(reminderDate.getTime() / 60000);
+      if (previousStartMinute === reminderMinute) {
+        setReminderDate(new Date(start));
+      }
+    }
+    setStartTime(start);
+    setEndTime(ensureEndAfterStart(start, end));
+    setTimeModalVisible(false);
+  };
+
+  const taskTimeModalAnchor = useMemo(() => startOfDay(selectedDate), [selectedDate]);
+
   const buildPayload = (): TaskFormValues => {
     const trimmedDescription = description.trim();
-    const preparedDescription =
-      mode === 'task'
-        ? injectTimeMetadata(trimmedDescription, datesToTimeRange(startTime, endTime))
-        : trimmedDescription || null;
+    const preparedDescription = injectTimeMetadata(
+      trimmedDescription.length ? trimmedDescription : null,
+      datesToTimeRange(startTime, endTime),
+    );
 
     return {
       title: title.trim(),
@@ -225,11 +243,9 @@ export function TaskFormModal({
       setDescription('');
       setReminderEnabled(false);
       setReminderDate(null);
-      if (mode === 'task') {
-        const start = defaultTaskStart();
-        setStartTime(start);
-        setEndTime(defaultTaskEnd(start));
-      }
+      const start = defaultTaskStart();
+      setStartTime(start);
+      setEndTime(defaultTaskEnd(start));
     }
     onClose();
   };
@@ -247,6 +263,14 @@ export function TaskFormModal({
   const updateStartTime = (date: Date) => {
     const next = new Date(selectedDate);
     next.setHours(date.getHours(), date.getMinutes(), 0, 0);
+    if (reminderEnabled && reminderDate) {
+      const previousStartMinute = Math.floor(startTime.getTime() / 60000);
+      const reminderMinute = Math.floor(reminderDate.getTime() / 60000);
+      if (previousStartMinute === reminderMinute) {
+        const alignedReminder = new Date(next);
+        setReminderDate(alignedReminder);
+      }
+    }
     setStartTime(next);
     setEndTime((prev) => ensureEndAfterStart(next, prev));
   };
@@ -308,9 +332,11 @@ export function TaskFormModal({
                 : formatDate(selectedDate, { weekday: 'long' }) ?? 'Select a day'}
             </ThemedText>
           </View>
-          {mode === 'task' ? (
+          {mode === 'task' || mode === 'routine' ? (
             <View style={styles.field}>
-              <ThemedText type="subtitle">Time</ThemedText>
+              <ThemedText type="subtitle">
+                {mode === 'routine' ? 'Routine time' : 'Time'}
+              </ThemedText>
               <View style={styles.row}>
                 <Pressable
                   style={pickerButtonStyle}
@@ -323,6 +349,13 @@ export function TaskFormModal({
                   onPress={() => showPicker('time', endTime, updateEndTime)}
                 >
                   <ThemedText>{formatTime(endTime) ?? 'End time'}</ThemedText>
+                </Pressable>
+                <Pressable
+                  style={[styles.timeIconButton, { borderColor, backgroundColor: surfaceMuted }]}
+                  onPress={openTimeModal}
+                  accessibilityRole="button"
+                >
+                  <MaterialIcons name="schedule" size={22} color={tint} />
                 </Pressable>
               </View>
             </View>
@@ -389,6 +422,18 @@ export function TaskFormModal({
             minimumDate={selectedDate}
           />
         ) : null}
+        {mode === 'task' || mode === 'routine' ? (
+          <TaskTimeModal
+            visible={isTimeModalVisible}
+            onClose={() => setTimeModalVisible(false)}
+            onSubmit={handleTimeModalSubmit}
+            taskTitle={title || 'Task timing'}
+            anchorDate={taskTimeModalAnchor}
+            initialStart={startTime}
+            initialEnd={endTime}
+            submitting={false}
+          />
+        ) : null}
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -430,6 +475,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
+  },
+  timeIconButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   footer: {
     flexDirection: 'row',

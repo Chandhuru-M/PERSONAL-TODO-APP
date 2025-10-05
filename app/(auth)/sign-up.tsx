@@ -14,6 +14,30 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { useAuth } from '@/contexts/AuthContext';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import { supabase } from '@/lib/supabase';
+import { DEFAULT_MEAL_PREFERENCES, saveMealPreferences } from '@/storage/meal-preferences';
+
+const MINUTES_PER_DAY = 24 * 60;
+const TIME_REGEX = /^(\d{1,2}):(\d{2})$/;
+
+const formatMinutesToTime = (minutes: number): string => {
+  const normalized = ((minutes % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  const hours = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+};
+
+const parseTimeInput = (value: string): number | null => {
+  const trimmed = value.trim();
+  const match = TIME_REGEX.exec(trimmed);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || hours > 23) return null;
+  if (minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+};
 
 export default function SignUpScreen() {
   const router = useRouter();
@@ -21,6 +45,13 @@ export default function SignUpScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [breakfastTime, setBreakfastTime] = useState(
+    formatMinutesToTime(DEFAULT_MEAL_PREFERENCES.breakfastStart),
+  );
+  const [lunchTime, setLunchTime] = useState(formatMinutesToTime(DEFAULT_MEAL_PREFERENCES.lunchStart));
+  const [dinnerTime, setDinnerTime] = useState(
+    formatMinutesToTime(DEFAULT_MEAL_PREFERENCES.dinnerStart),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -41,13 +72,50 @@ export default function SignUpScreen() {
       return;
     }
 
+    const breakfastMinutes = parseTimeInput(breakfastTime);
+    const lunchMinutes = parseTimeInput(lunchTime);
+    const dinnerMinutes = parseTimeInput(dinnerTime);
+
+    if (
+      breakfastMinutes === null ||
+      lunchMinutes === null ||
+      dinnerMinutes === null
+    ) {
+      setError('Please enter meal times in HH:MM (24-hour) format.');
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     setMessage(null);
     try {
-  await signUp(email.trim(), password);
-  setMessage('Account created! Redirecting to your tasks…');
-  router.replace('/' as never);
+      const authUser = await signUp(email.trim(), password);
+
+      let resolvedUserId: string | null = authUser?.id ?? null;
+      if (!resolvedUserId) {
+        try {
+          const { data } = await supabase.auth.getUser();
+          resolvedUserId = data.user?.id ?? null;
+        } catch (lookupError) {
+          console.warn('Unable to resolve user after sign up', lookupError);
+        }
+      }
+
+      if (resolvedUserId) {
+        try {
+          await saveMealPreferences(resolvedUserId, {
+            breakfastStart: breakfastMinutes,
+            lunchStart: lunchMinutes,
+            dinnerStart: dinnerMinutes,
+          });
+        } catch (prefError) {
+          console.warn('Failed to save meal preferences', prefError);
+        }
+        setMessage('Account created! Personalizing your routine…');
+        router.replace('/' as never);
+      } else {
+        setMessage('Account created! Check your email to confirm your account.');
+      }
     } catch (err) {
       const messageText = err instanceof Error ? err.message : 'Unable to sign up';
       setError(messageText);
@@ -59,7 +127,7 @@ export default function SignUpScreen() {
   const inputStyle = [styles.input, { borderColor, color: textColor, backgroundColor: surfaceMuted }];
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: background }]}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: background }]}> 
       <KeyboardAvoidingView
         style={[styles.flex, { backgroundColor: background }]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -103,6 +171,55 @@ export default function SignUpScreen() {
               style={inputStyle}
               placeholder="••••••••"
               placeholderTextColor={mutedColor}
+            />
+          </View>
+
+          <View style={styles.sectionHeader}>
+            <ThemedText style={styles.sectionTitle}>Daily meal times</ThemedText>
+            <ThemedText style={[styles.helperText, { color: mutedColor }]}>
+              We personalize your routine using these times. Use 24-hour format, e.g. 07:30.
+            </ThemedText>
+          </View>
+
+          <View style={styles.field}>
+            <ThemedText>Breakfast</ThemedText>
+            <TextInput
+              value={breakfastTime}
+              onChangeText={setBreakfastTime}
+              style={inputStyle}
+              placeholder="08:00"
+              placeholderTextColor={mutedColor}
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              maxLength={5}
+            />
+          </View>
+
+          <View style={styles.field}>
+            <ThemedText>Lunch</ThemedText>
+            <TextInput
+              value={lunchTime}
+              onChangeText={setLunchTime}
+              style={inputStyle}
+              placeholder="13:00"
+              placeholderTextColor={mutedColor}
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              maxLength={5}
+            />
+          </View>
+
+          <View style={styles.field}>
+            <ThemedText>Dinner</ThemedText>
+            <TextInput
+              value={dinnerTime}
+              onChangeText={setDinnerTime}
+              style={inputStyle}
+              placeholder="19:30"
+              placeholderTextColor={mutedColor}
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              maxLength={5}
             />
           </View>
 
@@ -151,6 +268,16 @@ const styles = StyleSheet.create({
   },
   field: {
     gap: 8,
+  },
+  sectionHeader: {
+    gap: 8,
+  },
+  sectionTitle: {
+    fontWeight: '600',
+  },
+  helperText: {
+    fontSize: 12,
+    lineHeight: 16,
   },
   input: {
     borderRadius: 10,

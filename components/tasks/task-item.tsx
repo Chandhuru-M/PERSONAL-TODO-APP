@@ -10,12 +10,21 @@ import { parseTimeRange, stripTimeMetadata, timeRangeToFriendly } from '@/utils/
 
 interface TaskItemProps {
   task: Task;
-  onToggleComplete: (task: Task) => void;
-  onEdit: (task: Task) => void;
-  onDelete: (task: Task) => void;
+  onToggleComplete?: (task: Task) => void;
+  onEdit?: (task: Task) => void;
+  onDelete?: (task: Task) => void;
+  onAdjustTime?: (task: Task) => void;
+  readOnly?: boolean;
 }
 
-export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemProps) {
+export function TaskItem({
+  task,
+  onToggleComplete,
+  onEdit,
+  onDelete,
+  onAdjustTime,
+  readOnly = false,
+}: TaskItemProps) {
   const tint = useThemeColor({}, 'tint');
   const textColor = useThemeColor({}, 'text');
   const muted = useThemeColor({}, 'muted');
@@ -34,6 +43,23 @@ export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemP
     .map((line) => line.trim())
     .filter(Boolean);
 
+  const canAdjustTime = !isRoutine && !readOnly && Boolean(onAdjustTime) && Boolean(task.due_at);
+
+  const handleToggle = () => {
+    if (readOnly || !onToggleComplete) return;
+    onToggleComplete(task);
+  };
+
+  const handleEdit = () => {
+    if (readOnly || !onEdit) return;
+    onEdit(task);
+  };
+
+  const handleDelete = () => {
+    if (readOnly || !onDelete) return;
+    onDelete(task);
+  };
+
   return (
     <ThemedView
       lightColor={surface}
@@ -42,12 +68,14 @@ export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemP
         styles.container,
         { borderColor },
         task.is_completed && styles.completedContainer,
+        readOnly && styles.readOnlyContainer,
       ]}
     >
       <View style={styles.row}>
         <Pressable
           accessibilityRole="button"
-          onPress={() => onToggleComplete(task)}
+          disabled={readOnly || !onToggleComplete}
+          onPress={handleToggle}
           style={styles.checkbox}
         >
           <MaterialIcons
@@ -56,7 +84,7 @@ export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemP
             color={task.is_completed ? tint : textColor}
           />
         </Pressable>
-        <Pressable style={styles.content} onPress={() => onEdit(task)}>
+        <Pressable style={styles.content} onPress={handleEdit} disabled={readOnly || !onEdit}>
           <ThemedText
             type="subtitle"
             style={task.is_completed ? styles.completedText : undefined}
@@ -74,7 +102,26 @@ export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemP
           ))}
           <View style={styles.metaRow}>
             {timeLabel ? (
-              <ThemedText style={[styles.timeText, { color: muted }]}>{timeLabel}</ThemedText>
+              isRoutine ? (
+                <ThemedText style={[styles.timeText, { color: muted }]}>{timeLabel}</ThemedText>
+              ) : (
+                <Pressable
+                  style={[styles.timePill, { borderColor: muted }]}
+                  onPress={() => {
+                    if (readOnly || !onAdjustTime) return;
+                    onAdjustTime(task);
+                  }}
+                  disabled={readOnly || !onAdjustTime}
+                  accessibilityRole="button"
+                >
+                  <MaterialIcons
+                    name="schedule"
+                    size={14}
+                    color={readOnly || !onAdjustTime ? muted : tint}
+                  />
+                  <ThemedText style={[styles.timeText, { color: muted }]}>{timeLabel}</ThemedText>
+                </Pressable>
+              )
             ) : null}
             {isRoutine ? (
               <ThemedText style={[styles.metaText, { color: isRest ? muted : tint }]}>
@@ -93,9 +140,28 @@ export function TaskItem({ task, onToggleComplete, onEdit, onDelete }: TaskItemP
             ) : null}
           </View>
         </Pressable>
-        <Pressable accessibilityRole="button" onPress={() => onDelete(task)} style={styles.iconButton}>
-          <MaterialIcons name="delete-outline" size={20} color={danger} />
-        </Pressable>
+        {!readOnly ? (
+          <View style={styles.actionColumn}>
+            {canAdjustTime ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => onAdjustTime?.(task)}
+                style={styles.iconButton}
+              >
+                <MaterialIcons name="schedule" size={20} color={tint} />
+              </Pressable>
+            ) : null}
+            {onDelete ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={handleDelete}
+                style={styles.iconButton}
+              >
+                <MaterialIcons name="delete-outline" size={20} color={danger} />
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
       </View>
     </ThemedView>
   );
@@ -111,6 +177,9 @@ const styles = StyleSheet.create({
   },
   completedContainer: {
     opacity: 0.6,
+  },
+  readOnlyContainer: {
+    opacity: 0.85,
   },
   row: {
     flexDirection: 'row',
@@ -139,8 +208,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  timePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
   iconButton: {
     padding: 4,
     alignSelf: 'flex-start',
+  },
+  actionColumn: {
+    alignItems: 'center',
+    gap: 4,
   },
 });

@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 
+import { useAuth } from '@/contexts/AuthContext';
 import {
     createTask as apiCreateTask,
     deleteTask as apiDeleteTask,
@@ -15,6 +16,11 @@ import {
     scheduleDailySummary,
     scheduleTaskReminder,
 } from '@/lib/notifications';
+import {
+    DEFAULT_MEAL_PREFERENCES,
+    MealPreferences,
+    loadMealPreferences,
+} from '@/storage/meal-preferences';
 import type { Task } from '@/types/task';
 import { startOfDay } from '@/utils/dates';
 import {
@@ -46,7 +52,7 @@ interface DefaultRoutineSeed {
     hour: number;
     minute: number;
   };
-  isRest?: boolean;
+  isFlexible?: boolean;
 }
 
 interface DayRange {
@@ -54,64 +60,192 @@ interface DayRange {
   end: Date;
 }
 
-const compareTasks = (a: Task, b: Task): number => {
-  if (a.is_completed !== b.is_completed) {
-    return a.is_completed ? 1 : -1;
-  }
-
-  const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.NEGATIVE_INFINITY;
-  const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.NEGATIVE_INFINITY;
-
-  if (dueA !== dueB) {
-    return dueA - dueB;
-  }
-
-  if (!a.due_at && !b.due_at) {
-    const orderA = ROUTINE_ORDER.get(a.title.toLowerCase());
-    const orderB = ROUTINE_ORDER.get(b.title.toLowerCase());
-    if (orderA !== undefined || orderB !== undefined) {
-      const valueA = orderA ?? Number.MAX_SAFE_INTEGER;
-      const valueB = orderB ?? Number.MAX_SAFE_INTEGER;
-      if (valueA !== valueB) {
-        return valueA - valueB;
-      }
-    }
-  }
-
-  const createdA = new Date(a.created_at).getTime();
-  const createdB = new Date(b.created_at).getTime();
-  return createdB - createdA;
-};
-
-const getRangeForDate = (value: Date): DayRange => {
-  const start = startOfDay(value);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { start, end };
-};
-
-const isTaskWithinRange = (task: Task, range: DayRange): boolean => {
-  if (!task.due_at) {
-    return true;
-  }
-  const dueDate = new Date(task.due_at);
-  return dueDate >= range.start && dueDate < range.end;
-};
-
-const sortTasks = (tasks: Task[]): Task[] => [...tasks].sort(compareTasks);
-
-const countActiveTasks = (tasks: Task[]): number =>
-  tasks.filter((task) => !task.is_completed).length;
-
-const ROUTINE_VERSION = '3';
+const ROUTINE_VERSION = '4';
 const ROUTINE_FLAG_KEY = 'default-routines-version';
 const LEGACY_ROUTINE_FLAG_KEY = 'default-routines-created.v1';
 
-const buildRoutineDescription = (seed: DefaultRoutineSeed): string => {
-  const range = normalizeRange({
+const WAKE_START = 4 * 60;
+const WAKE_END = 5 * 60;
+const SLEEP_START = 22 * 60;
+const MIN_MEAL_DURATION = 60;
+const EARLIEST_BREAKFAST = WAKE_END;
+const LATEST_BREAKFAST = 11 * 60;
+const LATEST_LUNCH = 17 * 60;
+const LATEST_DINNER = SLEEP_START - MIN_MEAL_DURATION;
+
+const ROUTINE_TITLES = {
+  wake: 'Wake up and personal duties',
+  workEarly: 'Schedule any work (early)',
+  breakfast: 'Breakfast',
+  workLateMorning: 'Schedule any work (late morning)',
+  lunch: 'Lunch',
+  workAfternoon: 'Schedule any work (afternoon)',
+  dinner: 'Dinner',
+  workEvening: 'Schedule any work (evening)',
+  sleep: 'Sleep',
+} as const;
+
+type RoutineTitle = (typeof ROUTINE_TITLES)[keyof typeof ROUTINE_TITLES];
+
+const FLEXIBLE_ROUTINE_TITLES = new Set<string>(
+  [
+    ROUTINE_TITLES.workEarly,
+    ROUTINE_TITLES.workLateMorning,
+    ROUTINE_TITLES.workAfternoon,
+    ROUTINE_TITLES.workEvening,
+  ].map((title) => title.toLowerCase()),
+);
+
+const FOOD_ROUTINE_TITLES = new Set<string>(
+  [ROUTINE_TITLES.breakfast, ROUTINE_TITLES.lunch, ROUTINE_TITLES.dinner].map((title) =>
+    title.toLowerCase(),
+  ),
+);
+
+const PREVIOUS_ROUTINE_TITLES = new Set<string>(
+  [
+    'sleep',
+    'early morning rest',
+    'breakfast',
+    'midday rest',
+    'lunch',
+    'afternoon rest',
+    'evening wind-down',
+    'late evening rest',
+  ].map((title) => title.toLowerCase()),
+);
+
+const clamp = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
+
+const normalizeMealPreferences = (prefs: MealPreferences): MealPreferences => {
+  const breakfast = clamp(prefs.breakfastStart, EARLIEST_BREAKFAST, LATEST_BREAKFAST);
+  const lunch = clamp(prefs.lunchStart, breakfast + MIN_MEAL_DURATION, LATEST_LUNCH);
+  const dinner = clamp(prefs.dinnerStart, lunch + MIN_MEAL_DURATION, LATEST_DINNER);
+  return {
+    breakfastStart: breakfast,
+    lunchStart: lunch,
+    dinnerStart: dinner,
+  };
+};
+
+const minutesToHourMinute = (minutes: number): { hour: number; minute: number } => {
+  const normalized = ((minutes % MINUTES_IN_DAY) + MINUTES_IN_DAY) % MINUTES_IN_DAY;
+  return {
+    hour: Math.floor(normalized / 60),
+    minute: normalized % 60,
+  };
+};
+
+const buildRoutineSeeds = (prefs: MealPreferences): DefaultRoutineSeed[] => {
+  const normalized = normalizeMealPreferences(prefs);
+
+  const breakfastStart = normalized.breakfastStart;
+  const breakfastEnd = breakfastStart + MIN_MEAL_DURATION;
+  const lunchStart = Math.max(normalized.lunchStart, breakfastEnd + MIN_MEAL_DURATION);
+  const lunchEnd = lunchStart + MIN_MEAL_DURATION;
+  const dinnerStart = Math.max(normalized.dinnerStart, lunchEnd + MIN_MEAL_DURATION);
+  const dinnerEnd = dinnerStart + MIN_MEAL_DURATION;
+
+  const earlyWork: [number, number] = [WAKE_END, breakfastStart];
+  const lateMorningWork: [number, number] = [breakfastEnd, lunchStart];
+  const afternoonWork: [number, number] = [lunchEnd, dinnerStart];
+  const eveningWorkStart = Math.min(dinnerEnd, SLEEP_START);
+  const eveningWork: [number, number] = [eveningWorkStart, SLEEP_START];
+
+  const seeds: DefaultRoutineSeed[] = [
+    {
+      title: ROUTINE_TITLES.wake,
+      summary: 'Ease into the day with stretching or reflection.',
+      startHour: minutesToHourMinute(WAKE_START).hour,
+      startMinute: minutesToHourMinute(WAKE_START).minute,
+      endHour: minutesToHourMinute(WAKE_END).hour,
+      endMinute: minutesToHourMinute(WAKE_END).minute,
+    },
+    {
+      title: ROUTINE_TITLES.workEarly,
+      summary: 'Tackle deep work before breakfast.',
+      startHour: minutesToHourMinute(earlyWork[0]).hour,
+      startMinute: minutesToHourMinute(earlyWork[0]).minute,
+      endHour: minutesToHourMinute(earlyWork[1]).hour,
+      endMinute: minutesToHourMinute(earlyWork[1]).minute,
+      isFlexible: true,
+    },
+    {
+      title: ROUTINE_TITLES.breakfast,
+      summary: 'Fuel up for the morning ahead.',
+      startHour: minutesToHourMinute(breakfastStart).hour,
+      startMinute: minutesToHourMinute(breakfastStart).minute,
+      endHour: minutesToHourMinute(breakfastEnd).hour,
+      endMinute: minutesToHourMinute(breakfastEnd).minute,
+      reminder: minutesToHourMinute(breakfastStart),
+    },
+    {
+      title: ROUTINE_TITLES.workLateMorning,
+      summary: 'Meetings, planning, and momentum building.',
+      startHour: minutesToHourMinute(lateMorningWork[0]).hour,
+      startMinute: minutesToHourMinute(lateMorningWork[0]).minute,
+      endHour: minutesToHourMinute(lateMorningWork[1]).hour,
+      endMinute: minutesToHourMinute(lateMorningWork[1]).minute,
+      isFlexible: true,
+    },
+    {
+      title: ROUTINE_TITLES.lunch,
+      summary: 'Pause, refuel, and reset for the afternoon.',
+      startHour: minutesToHourMinute(lunchStart).hour,
+      startMinute: minutesToHourMinute(lunchStart).minute,
+      endHour: minutesToHourMinute(lunchEnd).hour,
+      endMinute: minutesToHourMinute(lunchEnd).minute,
+      reminder: minutesToHourMinute(lunchStart),
+    },
+    {
+      title: ROUTINE_TITLES.workAfternoon,
+      summary: 'Focus on execution and collaborative work.',
+      startHour: minutesToHourMinute(afternoonWork[0]).hour,
+      startMinute: minutesToHourMinute(afternoonWork[0]).minute,
+      endHour: minutesToHourMinute(afternoonWork[1]).hour,
+      endMinute: minutesToHourMinute(afternoonWork[1]).minute,
+      isFlexible: true,
+    },
+    {
+      title: ROUTINE_TITLES.dinner,
+      summary: 'Close the day with a nourishing meal.',
+      startHour: minutesToHourMinute(dinnerStart).hour,
+      startMinute: minutesToHourMinute(dinnerStart).minute,
+      endHour: minutesToHourMinute(dinnerEnd).hour,
+      endMinute: minutesToHourMinute(dinnerEnd).minute,
+      reminder: minutesToHourMinute(dinnerStart),
+    },
+    {
+      title: ROUTINE_TITLES.workEvening,
+      summary: 'Tie up loose ends or pursue a side project.',
+      startHour: minutesToHourMinute(eveningWork[0]).hour,
+      startMinute: minutesToHourMinute(eveningWork[0]).minute,
+      endHour: minutesToHourMinute(eveningWork[1]).hour,
+      endMinute: minutesToHourMinute(eveningWork[1]).minute,
+      isFlexible: true,
+    },
+    {
+      title: ROUTINE_TITLES.sleep,
+      summary: 'Rest well to prepare for tomorrow.',
+      startHour: minutesToHourMinute(SLEEP_START).hour,
+      startMinute: minutesToHourMinute(SLEEP_START).minute,
+      endHour: minutesToHourMinute(WAKE_START).hour,
+      endMinute: minutesToHourMinute(WAKE_START).minute,
+      reminder: minutesToHourMinute(SLEEP_START),
+    },
+  ];
+
+  return seeds;
+};
+
+const seedToRange = (seed: DefaultRoutineSeed): TimeRange =>
+  normalizeRange({
     startMinutes: seed.startHour * 60 + seed.startMinute,
     endMinutes: seed.endHour * 60 + seed.endMinute,
   });
+
+const buildRoutineDescription = (seed: DefaultRoutineSeed): string => {
+  const range = seedToRange(seed);
   return injectTimeMetadata(seed.summary, range);
 };
 
@@ -129,6 +263,22 @@ const buildRoutineReminderDate = (seed: DefaultRoutineSeed): Date | null => {
   return buildReminderDate(seed.reminder.hour, seed.reminder.minute);
 };
 
+const computeNextDailyReminderDate = (reminderIso: string, reference: Date = new Date()): Date | null => {
+  const parsed = new Date(reminderIso);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const candidate = new Date(reference);
+  candidate.setHours(parsed.getHours(), parsed.getMinutes(), parsed.getSeconds(), parsed.getMilliseconds());
+  if (candidate <= reference) {
+    candidate.setDate(candidate.getDate() + 1);
+  }
+  return candidate;
+};
+
+const isRoutineTask = (task: Task): boolean => !task.due_at;
+
 const isSameMinute = (a?: string | null, b?: string | null): boolean => {
   if (!a && !b) return true;
   if (!a || !b) return false;
@@ -145,103 +295,101 @@ const isSameMinute = (a?: string | null, b?: string | null): boolean => {
   return minuteA === minuteB;
 };
 
-const seedToRange = (seed: DefaultRoutineSeed): TimeRange =>
-  normalizeRange({
-    startMinutes: seed.startHour * 60 + seed.startMinute,
-    endMinutes: seed.endHour * 60 + seed.endMinute,
-  });
+const countActiveTasks = (tasks: Task[]): number => tasks.filter((task) => !task.is_completed).length;
 
-const DEFAULT_ROUTINE_RANGE_MAP = new Map<string, TimeRange>();
-const DEFAULT_ROUTINE_SEED_MAP = new Map<string, DefaultRoutineSeed>();
+const ensureRoutineReminderUpToDate = async (
+  task: Task,
+): Promise<{ task: Task; reminderDate: Date | null }> => {
+  if (!task.reminder_at) {
+    return { task, reminderDate: null };
+  }
 
-const DEFAULT_ROUTINES: DefaultRoutineSeed[] = [
-  {
-    title: 'Sleep',
-    summary: 'Wind down and get ready for tomorrow.',
-    startHour: 23,
-    startMinute: 0,
-    endHour: 5,
-    endMinute: 0,
-    reminder: { hour: 23, minute: 0 },
-  },
-  {
-    title: 'Early morning rest',
-    summary: 'Ease into the day with light stretching or journaling.',
-    startHour: 5,
-    startMinute: 0,
-    endHour: 8,
-    endMinute: 0,
-    isRest: true,
-  },
-  {
-    title: 'Breakfast',
-    summary: 'Start the day with a healthy meal.',
-    startHour: 8,
-    startMinute: 0,
-    endHour: 9,
-    endMinute: 0,
-    reminder: { hour: 8, minute: 0 },
-  },
-  {
-    title: 'Midday rest',
-    summary: 'Focus, meetings, or flexible work time.',
-    startHour: 9,
-    startMinute: 0,
-    endHour: 14,
-    endMinute: 0,
-    isRest: true,
-  },
-  {
-    title: 'Lunch',
-    summary: 'Fuel up during the midday break.',
-    startHour: 14,
-    startMinute: 0,
-    endHour: 15,
-    endMinute: 0,
-    reminder: { hour: 14, minute: 0 },
-  },
-  {
-    title: 'Afternoon rest',
-    summary: 'Project work, errands, or downtime.',
-    startHour: 15,
-    startMinute: 0,
-    endHour: 21,
-    endMinute: 0,
-    isRest: true,
-  },
-  {
-    title: 'Evening wind-down',
-    summary: 'Reflect, enjoy hobbies, or connect with family.',
-    startHour: 21,
-    startMinute: 0,
-    endHour: 22,
-    endMinute: 0,
-    reminder: { hour: 21, minute: 0 },
-  },
-  {
-    title: 'Late evening rest',
-    summary: 'Light activities before heading to bed.',
-    startHour: 22,
-    startMinute: 0,
-    endHour: 23,
-    endMinute: 0,
-    isRest: true,
-  },
-];
+  const parsed = new Date(task.reminder_at);
+  if (Number.isNaN(parsed.getTime())) {
+    try {
+      const updated = await apiUpdateTask(task.id, { reminder_at: null });
+      return { task: updated, reminderDate: null };
+    } catch (error) {
+      console.warn('Failed to clear invalid reminder timestamp', task.id, error);
+      return { task: { ...task, reminder_at: null }, reminderDate: null };
+    }
+  }
 
-const ROUTINE_ORDER = new Map<string, number>();
-const FOOD_ROUTINES = new Set(['breakfast', 'lunch']);
-DEFAULT_ROUTINES.forEach((seed, index) => {
-  ROUTINE_ORDER.set(seed.title.toLowerCase(), index);
-  const key = seed.title.toLowerCase();
-  DEFAULT_ROUTINE_RANGE_MAP.set(key, seedToRange(seed));
-  DEFAULT_ROUTINE_SEED_MAP.set(key, seed);
-});
+  if (!isRoutineTask(task)) {
+    return { task, reminderDate: parsed };
+  }
 
-const isSameDay = (value: string, compare: Date): boolean => {
-  const target = startOfDay(new Date(value));
-  return target.getTime() === startOfDay(compare).getTime();
+  const nextReminderDate = computeNextDailyReminderDate(task.reminder_at);
+  if (!nextReminderDate) {
+    try {
+      const updated = await apiUpdateTask(task.id, { reminder_at: null });
+      return { task: updated, reminderDate: null };
+    } catch (error) {
+      console.warn('Failed to clear routine reminder timestamp', task.id, error);
+      return { task: { ...task, reminder_at: null }, reminderDate: null };
+    }
+  }
+
+  const nextIso = nextReminderDate.toISOString();
+  if (nextIso === task.reminder_at) {
+    return { task, reminderDate: nextReminderDate };
+  }
+
+  try {
+    const updated = await apiUpdateTask(task.id, { reminder_at: nextIso });
+    return { task: updated, reminderDate: nextReminderDate };
+  } catch (error) {
+    console.warn('Failed to roll routine reminder forward', task.id, error);
+    return { task: { ...task, reminder_at: nextIso }, reminderDate: nextReminderDate };
+  }
 };
+
+const getRangeForDate = (value: Date): DayRange => {
+  const start = startOfDay(value);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+};
+
+const isTaskWithinRange = (task: Task, range: DayRange): boolean => {
+  if (!task.due_at) {
+    return true;
+  }
+  const dueDate = new Date(task.due_at);
+  return dueDate >= range.start && dueDate < range.end;
+};
+
+const compareTasksFactory = (orderMap: Map<string, number>) => (a: Task, b: Task): number => {
+  if (a.is_completed !== b.is_completed) {
+    return a.is_completed ? 1 : -1;
+  }
+
+  const dueA = a.due_at ? new Date(a.due_at).getTime() : Number.NEGATIVE_INFINITY;
+  const dueB = b.due_at ? new Date(b.due_at).getTime() : Number.NEGATIVE_INFINITY;
+
+  if (dueA !== dueB) {
+    return dueA - dueB;
+  }
+
+  if (!a.due_at && !b.due_at) {
+    const orderA = orderMap.get(a.title.toLowerCase());
+    const orderB = orderMap.get(b.title.toLowerCase());
+    if (orderA !== undefined || orderB !== undefined) {
+      const valueA = orderA ?? Number.MAX_SAFE_INTEGER;
+      const valueB = orderB ?? Number.MAX_SAFE_INTEGER;
+      if (valueA !== valueB) {
+        return valueA - valueB;
+      }
+    }
+  }
+
+  const createdA = new Date(a.created_at).getTime();
+  const createdB = new Date(b.created_at).getTime();
+  return createdB - createdA;
+};
+
+const sortTasks = (tasks: Task[], comparator: (a: Task, b: Task) => number): Task[] =>
+  [...tasks].sort(comparator);
 
 const sanitizeDescription = (description: string | null): string => stripTimeMetadata(description);
 
@@ -301,7 +449,7 @@ const findLargestGap = (bounds: TimeRange, blockers: TimeRange[]): TimeRange | n
   return best;
 };
 
-const adjustRestRange = (seedRange: TimeRange, blockers: TimeRange[]): TimeRange | null =>
+const adjustFlexibleRange = (seedRange: TimeRange, blockers: TimeRange[]): TimeRange | null =>
   findLargestGap(seedRange, blockers);
 
 const adjustFoodRange = (seedRange: TimeRange, blockers: TimeRange[]): TimeRange => {
@@ -319,15 +467,24 @@ const adjustFoodRange = (seedRange: TimeRange, blockers: TimeRange[]): TimeRange
   return { startMinutes: start, endMinutes: start + duration };
 };
 
-const applyScheduleAdjustments = (tasks: Task[], selectedDate: Date): Task[] => {
+const applyScheduleAdjustments = (
+  tasks: Task[],
+  selectedDate: Date,
+  seeds: DefaultRoutineSeed[],
+  rangeMap: Map<string, TimeRange>,
+  flexibleTitles: Set<string>,
+  foodTitles: Set<string>,
+  allowedTitles: Set<string>,
+): Task[] => {
   const routineTasks = tasks.filter((task) => !task.due_at);
   const routineByTitle = new Map<string, Task>();
   routineTasks.forEach((task) => {
     routineByTitle.set(task.title.toLowerCase(), task);
   });
 
+  const dayRange = getRangeForDate(selectedDate);
   const blocking: TimeRange[] = tasks
-    .filter((task) => task.due_at && isSameDay(task.due_at, selectedDate))
+    .filter((task) => task.due_at && isTaskWithinRange(task, dayRange))
     .map((task) => parseTimeRange(task.description))
     .filter((range): range is TimeRange => Boolean(range))
     .map((range) => normalizeRange(range));
@@ -335,45 +492,50 @@ const applyScheduleAdjustments = (tasks: Task[], selectedDate: Date): Task[] => 
   const updates = new Map<string, Task>();
   const removed = new Set<string>();
 
-  for (const seed of DEFAULT_ROUTINES) {
+  for (const seed of seeds) {
     const key = seed.title.toLowerCase();
     const routineTask = routineByTitle.get(key);
     if (!routineTask) {
       continue;
     }
 
-    const seedRange = DEFAULT_ROUTINE_RANGE_MAP.get(key) ?? seedToRange(seed);
+    const seedRange = rangeMap.get(key) ?? seedToRange(seed);
 
-    if (!seed.isRest) {
-      const range = FOOD_ROUTINES.has(key)
-        ? adjustFoodRange(seedRange, blocking)
-        : normalizeRange(seedRange);
+    if (foodTitles.has(key)) {
+      const range = adjustFoodRange(seedRange, blocking);
       blocking.push(toBlockingRange(range));
       updates.set(routineTask.id, withTimeRange(routineTask, range));
+      continue;
     }
-  }
 
-  for (const seed of DEFAULT_ROUTINES) {
-    if (!seed.isRest) {
+    if (flexibleTitles.has(key)) {
+      const gap = adjustFlexibleRange(seedRange, blocking);
+      if (!gap) {
+        removed.add(routineTask.id);
+        continue;
+      }
+      blocking.push(toBlockingRange(gap));
+      updates.set(routineTask.id, withTimeRange(routineTask, gap));
       continue;
     }
-    const key = seed.title.toLowerCase();
-    const routineTask = routineByTitle.get(key);
-    if (!routineTask) {
-      continue;
-    }
-    const seedRange = DEFAULT_ROUTINE_RANGE_MAP.get(key) ?? seedToRange(seed);
-    const gap = adjustRestRange(seedRange, blocking);
-    if (!gap) {
-      removed.add(routineTask.id);
-      continue;
-    }
-    blocking.push(toBlockingRange(gap));
-    updates.set(routineTask.id, withTimeRange(routineTask, gap));
+
+    blocking.push(toBlockingRange(seedRange));
+    updates.set(routineTask.id, withTimeRange(routineTask, seedRange));
   }
 
   return tasks
-    .filter((task) => !removed.has(task.id))
+    .filter((task) => {
+      if (!task.due_at) {
+        const key = task.title.toLowerCase();
+        if (!allowedTitles.has(key)) {
+          return false;
+        }
+        if (removed.has(task.id)) {
+          return false;
+        }
+      }
+      return true;
+    })
     .map((task) => {
       if (!task.due_at) {
         return updates.get(task.id) ?? task;
@@ -383,6 +545,10 @@ const applyScheduleAdjustments = (tasks: Task[], selectedDate: Date): Task[] => 
 };
 
 export function useTasks() {
+  const { user } = useAuth();
+  const userId = user?.id ?? null;
+
+  const [mealPreferences, setMealPreferences] = useState<MealPreferences>(DEFAULT_MEAL_PREFERENCES);
   const [selectedDate, setSelectedDate] = useState<Date>(() => startOfDay(new Date()));
   const [state, setState] = useState<TaskState>({
     loading: true,
@@ -391,11 +557,86 @@ export function useTasks() {
   });
   const seedingRef = useRef(false);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncPreferences() {
+      if (!userId) {
+        if (!cancelled) setMealPreferences(DEFAULT_MEAL_PREFERENCES);
+        return;
+      }
+
+      try {
+        const stored = await loadMealPreferences(userId);
+        if (!cancelled) {
+          setMealPreferences(stored ?? DEFAULT_MEAL_PREFERENCES);
+        }
+      } catch (error) {
+        console.warn('Failed to load meal preferences', error);
+        if (!cancelled) {
+          setMealPreferences(DEFAULT_MEAL_PREFERENCES);
+        }
+      }
+    }
+
+    void syncPreferences();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const normalizedPreferences = useMemo(
+    () => normalizeMealPreferences(mealPreferences),
+    [mealPreferences],
+  );
+
+  const routineSeeds = useMemo(
+    () => buildRoutineSeeds(normalizedPreferences),
+    [normalizedPreferences],
+  );
+
+  const routineOrder = useMemo(() => {
+    const map = new Map<string, number>();
+    routineSeeds.forEach((seed, index) => {
+      map.set(seed.title.toLowerCase(), index);
+    });
+    return map;
+  }, [routineSeeds]);
+
+  const routineRangeMap = useMemo(() => {
+    const map = new Map<string, TimeRange>();
+    routineSeeds.forEach((seed) => {
+      map.set(seed.title.toLowerCase(), seedToRange(seed));
+    });
+    return map;
+  }, [routineSeeds]);
+
+  const allowedRoutineTitles = useMemo(() => {
+    const set = new Set<string>();
+    routineSeeds.forEach((seed) => set.add(seed.title.toLowerCase()));
+    return set;
+  }, [routineSeeds]);
+
+  const comparator = useMemo(() => compareTasksFactory(routineOrder), [routineOrder]);
+  const sortTaskList = useCallback((list: Task[]) => sortTasks(list, comparator), [comparator]);
+
   const range = useMemo(() => getRangeForDate(selectedDate), [selectedDate]);
 
   const adjustForSelectedDate = useCallback(
-    (tasks: Task[]): Task[] => sortTasks(applyScheduleAdjustments(tasks, selectedDate)),
-    [selectedDate],
+    (tasks: Task[]) =>
+      sortTaskList(
+        applyScheduleAdjustments(
+          tasks,
+          selectedDate,
+          routineSeeds,
+          routineRangeMap,
+          FLEXIBLE_ROUTINE_TITLES,
+          FOOD_ROUTINE_TITLES,
+          allowedRoutineTitles,
+        ),
+      ),
+    [selectedDate, routineSeeds, routineRangeMap, allowedRoutineTitles, sortTaskList],
   );
 
   const ensureDefaultRoutines = useCallback(
@@ -412,15 +653,30 @@ export function useTasks() {
           (await AsyncStorage.getItem(ROUTINE_FLAG_KEY)) ?? (legacyFlag ? '1' : null);
         const shouldUpgrade = storedVersion !== ROUTINE_VERSION;
 
-        const routines = existing.filter((task) => !task.due_at);
+        let nextTasks = [...existing];
+        const routines = nextTasks.filter((task) => !task.due_at);
         const routineMap = new Map<string, Task>(
           routines.map((task) => [task.title.toLowerCase(), task]),
         );
 
-        let nextTasks = [...existing];
+        if (shouldUpgrade) {
+          for (const routine of routines) {
+            const titleKey = routine.title.toLowerCase();
+            if (!allowedRoutineTitles.has(titleKey) && PREVIOUS_ROUTINE_TITLES.has(titleKey)) {
+              try {
+                await apiDeleteTask(routine.id);
+                nextTasks = nextTasks.filter((task) => task.id !== routine.id);
+                routineMap.delete(titleKey);
+              } catch (error) {
+                console.warn('Failed to remove legacy routine', routine.title, error);
+              }
+            }
+          }
+        }
+
         let changed = false;
 
-        for (const seed of DEFAULT_ROUTINES) {
+        for (const seed of routineSeeds) {
           const key = seed.title.toLowerCase();
           const description = buildRoutineDescription(seed);
           const reminderDate = buildRoutineReminderDate(seed);
@@ -451,10 +707,6 @@ export function useTasks() {
             } catch (error) {
               console.warn('Failed to create default routine', seed.title, error);
             }
-            continue;
-          }
-
-          if (!shouldUpgrade) {
             continue;
           }
 
@@ -520,8 +772,44 @@ export function useTasks() {
         seedingRef.current = false;
       }
     },
-    [],
+    [allowedRoutineTitles, routineSeeds],
   );
+
+  const syncTaskReminders = useCallback(async (tasks: Task[]): Promise<Task[]> => {
+    const updatedTasks = await Promise.all(
+      tasks.map(async (task) => {
+        try {
+          if (!task.reminder_at) {
+            await cancelTaskReminder(task.id);
+            return task;
+          }
+
+          if (task.due_at && task.is_completed) {
+            await cancelTaskReminder(task.id);
+            return task;
+          }
+
+          const { task: normalizedTask, reminderDate } = await ensureRoutineReminderUpToDate(task);
+
+          if (!normalizedTask.reminder_at || !reminderDate) {
+            await cancelTaskReminder(normalizedTask.id);
+            return { ...normalizedTask, reminder_at: null };
+          }
+
+          await scheduleTaskReminder(normalizedTask.id, normalizedTask.title, reminderDate, {
+            repeatDaily: !normalizedTask.due_at,
+          });
+
+          return normalizedTask;
+        } catch (error) {
+          console.warn('Failed to sync reminder for task', task.id, error);
+          return task;
+        }
+      }),
+    );
+
+    return updatedTasks;
+  }, [ensureRoutineReminderUpToDate]);
 
   const refresh = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true, error: null }));
@@ -531,16 +819,17 @@ export function useTasks() {
         end: range.end.toISOString(),
         includeCompleted: true,
       });
-  tasks = await ensureDefaultRoutines(tasks);
-  tasks = sortTasks(tasks);
-  const adjusted = adjustForSelectedDate(tasks);
-  setState({ loading: false, error: null, tasks });
-  await scheduleDailySummary(countActiveTasks(adjusted));
+      tasks = await ensureDefaultRoutines(tasks);
+      tasks = await syncTaskReminders(tasks);
+      const sorted = sortTaskList(tasks);
+      setState({ loading: false, error: null, tasks: sorted });
+      const adjusted = adjustForSelectedDate(sorted);
+      await scheduleDailySummary(countActiveTasks(adjusted));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to load tasks';
       setState((prev) => ({ ...prev, loading: false, error: message }));
     }
-  }, [adjustForSelectedDate, ensureDefaultRoutines, range]);
+  }, [ensureDefaultRoutines, range, sortTaskList, adjustForSelectedDate, syncTaskReminders]);
 
   useEffect(() => {
     refresh().catch((err) => console.warn('Failed to fetch tasks', err));
@@ -571,7 +860,7 @@ export function useTasks() {
           shouldUpdateSummary = true;
         }
 
-        updated = sortTasks(updated);
+        updated = sortTaskList(updated);
         nextTasks = updated;
         return { ...prev, tasks: updated };
       });
@@ -581,56 +870,54 @@ export function useTasks() {
         await scheduleDailySummary(countActiveTasks(adjusted));
       }
     },
-    [adjustForSelectedDate, range],
+    [range, sortTaskList, adjustForSelectedDate],
   );
 
-  const applyTaskDeletion = useCallback(async (taskId: string) => {
-    let nextTasks: Task[] = [];
-    let removed = false;
+  const applyTaskDeletion = useCallback(
+    async (taskId: string) => {
+      let nextTasks: Task[] = [];
+      let removed = false;
 
-    setState((prev) => {
-      const filtered = prev.tasks.filter((task) => {
-        if (task.id === taskId) {
-          removed = true;
-          return false;
-        }
-        return true;
+      setState((prev) => {
+        const filtered = prev.tasks.filter((task) => {
+          if (task.id === taskId) {
+            removed = true;
+            return false;
+          }
+          return true;
+        });
+        const updated = sortTaskList(filtered);
+        nextTasks = updated;
+        return { ...prev, tasks: updated };
       });
-      const updated = sortTasks(filtered);
-      nextTasks = updated;
-      return { ...prev, tasks: updated };
-    });
 
-    if (removed) {
-      const adjusted = adjustForSelectedDate(nextTasks);
-      await scheduleDailySummary(countActiveTasks(adjusted));
-    }
-  }, [adjustForSelectedDate]);
+      if (removed) {
+        const adjusted = adjustForSelectedDate(nextTasks);
+        await scheduleDailySummary(countActiveTasks(adjusted));
+      }
+    },
+    [sortTaskList, adjustForSelectedDate],
+  );
 
   const handleCreateTask = useCallback(
     async (payload: Parameters<typeof apiCreateTask>[0]) => {
-      const task = await apiCreateTask(payload);
-      if (task.reminder_at) {
-        try {
-          await scheduleTaskReminder(task.id, task.title, new Date(task.reminder_at), {
-            repeatDaily: !task.due_at,
-          });
-        } catch (error) {
-          console.warn('Failed to schedule reminder', task.id, error);
-        }
-      }
-      await applyTaskUpdate(task);
-      return task;
-    },
-    [applyTaskUpdate],
-  );
+      let requestPayload = payload;
 
-  const handleUpdateTask = useCallback(
-    async (taskId: string, payload: Parameters<typeof apiUpdateTask>[1]) => {
-      const task = await apiUpdateTask(taskId, payload);
-      if (task.reminder_at) {
+      if (payload.reminder_at && payload.due_at === null) {
+        const nextReminderDate = computeNextDailyReminderDate(payload.reminder_at);
+        requestPayload = {
+          ...payload,
+          reminder_at: nextReminderDate ? nextReminderDate.toISOString() : payload.reminder_at,
+        };
+      }
+
+      let task = await apiCreateTask(requestPayload);
+      const { task: normalizedTask, reminderDate } = await ensureRoutineReminderUpToDate(task);
+      task = normalizedTask;
+
+      if (task.reminder_at && reminderDate) {
         try {
-          await scheduleTaskReminder(task.id, task.title, new Date(task.reminder_at), {
+          await scheduleTaskReminder(task.id, task.title, reminderDate, {
             repeatDaily: !task.due_at,
           });
         } catch (error) {
@@ -639,10 +926,56 @@ export function useTasks() {
       } else {
         await cancelTaskReminder(task.id);
       }
+
       await applyTaskUpdate(task);
       return task;
     },
-    [applyTaskUpdate],
+    [applyTaskUpdate, ensureRoutineReminderUpToDate],
+  );
+
+  const handleUpdateTask = useCallback(
+    async (taskId: string, payload: Parameters<typeof apiUpdateTask>[1]) => {
+      let requestPayload = payload;
+
+      if ('reminder_at' in payload && payload.reminder_at) {
+        let isRoutineUpdate = false;
+
+        if ('due_at' in payload) {
+          isRoutineUpdate = payload.due_at === null;
+        } else {
+          const existingTask = state.tasks.find((item) => item.id === taskId);
+          isRoutineUpdate = existingTask ? isRoutineTask(existingTask) : false;
+        }
+
+        if (isRoutineUpdate) {
+          const nextReminderDate = computeNextDailyReminderDate(payload.reminder_at);
+          requestPayload = {
+            ...payload,
+            reminder_at: nextReminderDate ? nextReminderDate.toISOString() : payload.reminder_at,
+          };
+        }
+      }
+
+      let task = await apiUpdateTask(taskId, requestPayload);
+      const { task: normalizedTask, reminderDate } = await ensureRoutineReminderUpToDate(task);
+      task = normalizedTask;
+
+      if (task.reminder_at && reminderDate) {
+        try {
+          await scheduleTaskReminder(task.id, task.title, reminderDate, {
+            repeatDaily: !task.due_at,
+          });
+        } catch (error) {
+          console.warn('Failed to schedule reminder', task.id, error);
+        }
+      } else {
+        await cancelTaskReminder(task.id);
+      }
+
+      await applyTaskUpdate(task);
+      return task;
+    },
+    [applyTaskUpdate, ensureRoutineReminderUpToDate, state.tasks],
   );
 
   const handleToggleComplete = useCallback(

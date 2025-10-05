@@ -14,7 +14,9 @@ interface TaskListProps {
   onToggleComplete: (task: Task) => void;
   onEdit: (task: Task) => void;
   onDelete: (task: Task) => void;
+  onAdjustTime?: (task: Task) => void;
   selectedDate: Date;
+  readOnly?: boolean;
 }
 
 export function TaskList({
@@ -25,17 +27,32 @@ export function TaskList({
   onToggleComplete,
   onEdit,
   onDelete,
+  onAdjustTime,
   selectedDate,
+  readOnly = false,
 }: TaskListProps) {
   const dayLabel = formatDate(selectedDate, { weekday: 'long' }) ?? 'that day';
+  const displayedTasks = readOnly
+    ? tasks.filter((task) => task.is_completed && task.due_at)
+    : tasks;
+  const emptyMessage = readOnly
+    ? `No completed tasks recorded for ${dayLabel}.`
+    : `You haven't planned anything for ${dayLabel}. Use the buttons below to add a task or a daily routine.`;
   return (
     <FlatList
-      data={tasks}
+      data={displayedTasks}
       keyExtractor={(item) => item.id}
       contentContainerStyle={styles.listContent}
       refreshControl={<RefreshControl refreshing={loading} onRefresh={onRefresh} />}
       renderItem={({ item }) => (
-        <TaskItem task={item} onToggleComplete={onToggleComplete} onEdit={onEdit} onDelete={onDelete} />
+        <TaskItem
+          task={item}
+          onToggleComplete={readOnly ? undefined : onToggleComplete}
+          onEdit={readOnly ? undefined : onEdit}
+          onDelete={readOnly ? undefined : onDelete}
+          onAdjustTime={readOnly ? undefined : onAdjustTime}
+          readOnly={readOnly}
+        />
       )}
       ListEmptyComponent={
         !loading ? (
@@ -48,9 +65,7 @@ export function TaskList({
             ) : (
               <>
                 <ThemedText type="subtitle">Nothing scheduled</ThemedText>
-                <ThemedText>
-                  {`You haven't planned anything for ${dayLabel}. Use the buttons below to add a task or a daily routine.`}
-                </ThemedText>
+                <ThemedText>{emptyMessage}</ThemedText>
               </>
             )}
           </ThemedView>

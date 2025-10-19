@@ -12,12 +12,12 @@ import { useTasks } from '@/hooks/useTasks';
 import type { Task } from '@/types/task';
 import { formatTime, startOfDay } from '@/utils/dates';
 import {
-  datesToTimeRange,
-  injectTimeMetadata,
-  minutesToDate,
-  parseTimeRange,
-  stripTimeMetadata,
-  timeRangeToFriendly,
+    datesToTimeRange,
+    injectTimeMetadata,
+    minutesToDate,
+    parseTimeRange,
+    stripTimeMetadata,
+    timeRangeToFriendly,
 } from '@/utils/time-range';
 
 export default function RoutinesScreen() {
@@ -158,7 +158,10 @@ export default function RoutinesScreen() {
   };
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: background }]} edges={['bottom']}>
+    <SafeAreaView
+      style={[styles.safeArea, { backgroundColor: background }]}
+      edges={['top', 'bottom']}
+    >
       <ThemedView style={[styles.container, { backgroundColor: surface }]}>
         <ScrollView
           contentContainerStyle={styles.scrollContent}
@@ -215,8 +218,14 @@ export default function RoutinesScreen() {
             return (
               <ThemedView key={routine.id} style={[styles.card, { borderColor: border }]}>
                 <View style={styles.cardHeader}>
-                  <ThemedText type="subtitle">{routine.title}</ThemedText>
-                  <View style={styles.cardActions}>
+                  <ThemedText type="subtitle" style={styles.cardTitle}>
+                    {routine.title}
+                  </ThemedText>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.cardActions}
+                  >
                     <Pressable
                       accessibilityRole="button"
                       style={[styles.secondaryButton, { borderColor: border }]}
@@ -233,7 +242,7 @@ export default function RoutinesScreen() {
                       <MaterialIcons name="edit" size={18} color={tint} />
                       <ThemedText style={{ color: tint }}>Edit details</ThemedText>
                     </Pressable>
-                  </View>
+                  </ScrollView>
                 </View>
                 <ThemedText style={[styles.metaText, { color: muted }]}>{timeLabel}</ThemedText>
                 {summary ? <ThemedText>{summary}</ThemedText> : null}
@@ -311,14 +320,16 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    flexDirection: 'column',
     gap: 12,
+  },
+  cardTitle: {
+    flexShrink: 0,
   },
   cardActions: {
     flexDirection: 'row',
     gap: 8,
+    paddingRight: 12,
   },
   secondaryButton: {
     flexDirection: 'row',

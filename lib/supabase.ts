@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -10,6 +11,9 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 export const supabase = createClient(SUPABASE_URL ?? '', SUPABASE_ANON_KEY ?? '', {
   auth: {
     persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+    storage: AsyncStorage,
     storageKey: 'todo-scheduler-auth',
   },
 });

@@ -28,6 +28,7 @@ import {
     TimeRange,
     clampRangeToBounds,
     injectTimeMetadata,
+    minutesToDate,
     normalizeRange,
     parseTimeRange,
     rangeDuration,
@@ -116,6 +117,8 @@ const PREVIOUS_ROUTINE_TITLES = new Set<string>(
 );
 
 const clamp = (value: number, min: number, max: number): number => Math.min(Math.max(value, min), max);
+
+const MIN_ROUTINE_DURATION = 2;
 
 const normalizeMealPreferences = (prefs: MealPreferences): MealPreferences => {
   const breakfast = clamp(prefs.breakfastStart, EARLIEST_BREAKFAST, LATEST_BREAKFAST);
@@ -500,6 +503,16 @@ const applyScheduleAdjustments = (
     }
 
     const seedRange = rangeMap.get(key) ?? seedToRange(seed);
+    const existingRange = parseTimeRange(routineTask.description ?? null);
+    const hasCustomRange = Boolean(existingRange);
+    const baseRange = existingRange ?? seedRange;
+    const normalizedBaseRange = normalizeRange(baseRange);
+
+    if (hasCustomRange) {
+      blocking.push(toBlockingRange(normalizedBaseRange));
+      updates.set(routineTask.id, withTimeRange(routineTask, normalizedBaseRange));
+      continue;
+    }
 
     if (foodTitles.has(key)) {
       const range = adjustFoodRange(seedRange, blocking);
@@ -713,22 +726,37 @@ export function useTasks() {
           const updates: Parameters<typeof apiUpdateTask>[1] = {};
           let needsUpdate = false;
 
-          if ((current.description ?? '') !== description) {
-            updates.description = description;
-            needsUpdate = true;
+          const sanitizedCurrent = sanitizeDescription(current.description ?? '');
+          const sanitizedSeed = sanitizeDescription(description);
+          const currentRange = parseTimeRange(current.description ?? '');
+          const seedRange = parseTimeRange(description);
+          const hasCustomRange = Boolean(
+            currentRange &&
+              seedRange &&
+              (currentRange.startMinutes !== seedRange.startMinutes ||
+                currentRange.endMinutes !== seedRange.endMinutes),
+          );
+
+          if (!hasCustomRange && sanitizedCurrent === sanitizedSeed && !currentRange) {
+            if ((current.description ?? '') !== description) {
+              updates.description = description;
+              needsUpdate = true;
+            }
           }
 
           const desiredReminderIso = reminderDate ? reminderDate.toISOString() : null;
           const currentReminderIso = current.reminder_at ?? null;
 
-          if (seed.reminder) {
-            if (!isSameMinute(currentReminderIso, desiredReminderIso)) {
-              updates.reminder_at = desiredReminderIso;
+          if (!hasCustomRange) {
+            if (seed.reminder) {
+              if (!isSameMinute(currentReminderIso, desiredReminderIso)) {
+                updates.reminder_at = desiredReminderIso;
+                needsUpdate = true;
+              }
+            } else if (currentReminderIso) {
+              updates.reminder_at = null;
               needsUpdate = true;
             }
-          } else if (currentReminderIso) {
-            updates.reminder_at = null;
-            needsUpdate = true;
           }
 
           if (!needsUpdate) {
@@ -839,7 +867,7 @@ export function useTasks() {
   }, [refresh]);
 
   const applyTaskUpdate = useCallback(
-    async (task: Task) => {
+    async (task: Task): Promise<Task[]> => {
       let nextTasks: Task[] = [];
       let shouldUpdateSummary = false;
       const withinRange = isTaskWithinRange(task, range);
@@ -869,6 +897,8 @@ export function useTasks() {
         const adjusted = adjustForSelectedDate(nextTasks);
         await scheduleDailySummary(countActiveTasks(adjusted));
       }
+
+      return nextTasks;
     },
     [range, sortTaskList, adjustForSelectedDate],
   );
@@ -899,6 +929,270 @@ export function useTasks() {
     [sortTaskList, adjustForSelectedDate],
   );
 
+  const rebalancingRef = useRef(false);
+
+  const rebalanceRoutineSchedule = useCallback(
+    async (changedTask: Task, snapshot: Task[]): Promise<Task[]> => {
+      if (rebalancingRef.current) {
+        return snapshot;
+      }
+
+      rebalancingRef.current = true;
+      try {
+        const routines = sortTaskList(snapshot.filter((item) => isRoutineTask(item)));
+        if (routines.length === 0) {
+          return snapshot;
+        }
+
+        type RoutineMeta = {
+          task: Task;
+          key: string;
+          isAnchor: boolean;
+          startMinutes: number;
+          endMinutes: number;
+          originalStart: number;
+          originalEnd: number;
+        };
+
+        const metas: RoutineMeta[] = [];
+
+        for (const routine of routines) {
+          const key = routine.title.toLowerCase();
+          const parsed = parseTimeRange(routine.description ?? null);
+          const fallback = routineRangeMap.get(key) ?? null;
+          const range = parsed ?? fallback;
+          if (!range) {
+            return snapshot;
+          }
+          const normalized = normalizeRange(range);
+          metas.push({
+            task: routine,
+            key,
+            isAnchor: FOOD_ROUTINE_TITLES.has(key),
+            startMinutes: normalized.startMinutes,
+            endMinutes: normalized.endMinutes,
+            originalStart: normalized.startMinutes,
+            originalEnd: normalized.endMinutes,
+          });
+        }
+
+        const changedIndex = metas.findIndex((meta) => meta.task.id === changedTask.id);
+        if (changedIndex === -1) {
+          return snapshot;
+        }
+
+        const anchorIndices = metas
+          .map((meta, index) => (meta.isAnchor ? index : -1))
+          .filter((index) => index !== -1);
+
+        const rebalanceSegment = (
+          segmentStart: number,
+          segmentEnd: number,
+          boundaryStart: number,
+          boundaryEnd: number,
+          nextAnchorIndex: number | null,
+          lockedIndex: number | null,
+        ) => {
+          if (segmentStart >= segmentEnd) {
+            return;
+          }
+
+          if (lockedIndex !== null && (lockedIndex < segmentStart || lockedIndex >= segmentEnd)) {
+            lockedIndex = null;
+          }
+
+          if (lockedIndex !== null) {
+            const lockedStart = metas[lockedIndex].startMinutes;
+            rebalanceSegment(segmentStart, lockedIndex, boundaryStart, lockedStart, null, null);
+            const previousEnd = lockedIndex > segmentStart
+              ? metas[lockedIndex - 1].endMinutes
+              : boundaryStart;
+            if (previousEnd > metas[lockedIndex].startMinutes) {
+              const shift = previousEnd - metas[lockedIndex].startMinutes;
+              metas[lockedIndex].startMinutes += shift;
+              metas[lockedIndex].endMinutes += shift;
+            }
+            rebalanceSegment(
+              lockedIndex + 1,
+              segmentEnd,
+              metas[lockedIndex].endMinutes,
+              boundaryEnd,
+              nextAnchorIndex,
+              null,
+            );
+            return;
+          }
+
+          const count = segmentEnd - segmentStart;
+          const durations: number[] = new Array(count);
+          for (let i = 0; i < count; i += 1) {
+            const meta = metas[segmentStart + i];
+            const duration = Math.max(meta.endMinutes - meta.startMinutes, MIN_ROUTINE_DURATION);
+            durations[i] = duration;
+          }
+
+          const firstMeta = metas[segmentStart];
+          let firstStart = Math.max(boundaryStart, firstMeta.startMinutes);
+          let totalDuration = durations.reduce((sum, value) => sum + value, 0);
+          let finalEnd = firstStart + totalDuration;
+
+          if (finalEnd > boundaryEnd) {
+            let overflow = finalEnd - boundaryEnd;
+            while (overflow > 0) {
+              let reduced = false;
+              for (let i = count - 1; i >= 0 && overflow > 0; i -= 1) {
+                const available = durations[i] - MIN_ROUTINE_DURATION;
+                if (available <= 0) {
+                  continue;
+                }
+                const reduction = Math.min(available, overflow);
+                durations[i] -= reduction;
+                overflow -= reduction;
+                reduced = true;
+              }
+              if (!reduced) {
+                break;
+              }
+            }
+
+            totalDuration = durations.reduce((sum, value) => sum + value, 0);
+            finalEnd = firstStart + totalDuration;
+
+            if (finalEnd > boundaryEnd && nextAnchorIndex !== null) {
+              const shift = finalEnd - boundaryEnd;
+              const anchorMeta = metas[nextAnchorIndex];
+              anchorMeta.startMinutes += shift;
+              anchorMeta.endMinutes += shift;
+              finalEnd = boundaryEnd + shift;
+            }
+          }
+
+          let cursor = firstStart;
+          for (let i = segmentStart; i < segmentEnd; i += 1) {
+            const meta = metas[i];
+            const duration = durations[i - segmentStart];
+            meta.startMinutes = cursor;
+            meta.endMinutes = cursor + duration;
+            cursor = meta.endMinutes;
+          }
+        };
+
+        let previousAnchorIndex = -1;
+        for (const anchorIndex of anchorIndices) {
+          const segmentStart = previousAnchorIndex + 1;
+          const segmentEnd = anchorIndex;
+          const boundaryStart = previousAnchorIndex >= 0
+            ? metas[previousAnchorIndex].endMinutes
+            : (segmentStart < metas.length ? metas[segmentStart].startMinutes : 0);
+          const boundaryEnd = metas[anchorIndex].startMinutes;
+          const lockedIndex = changedIndex >= segmentStart && changedIndex < segmentEnd ? changedIndex : null;
+          rebalanceSegment(segmentStart, segmentEnd, boundaryStart, boundaryEnd, anchorIndex, lockedIndex);
+
+          const segmentEndTime = segmentEnd > segmentStart
+            ? metas[segmentEnd - 1].endMinutes
+            : boundaryStart;
+          if (segmentEndTime > metas[anchorIndex].startMinutes) {
+            const shift = segmentEndTime - metas[anchorIndex].startMinutes;
+            metas[anchorIndex].startMinutes += shift;
+            metas[anchorIndex].endMinutes += shift;
+          }
+
+          previousAnchorIndex = anchorIndex;
+        }
+
+        const tailStart = previousAnchorIndex + 1;
+        if (tailStart < metas.length) {
+          const boundaryStart = previousAnchorIndex >= 0
+            ? metas[previousAnchorIndex].endMinutes
+            : metas[tailStart].startMinutes;
+          const boundaryEnd = metas[metas.length - 1].endMinutes;
+          const lockedIndex = changedIndex >= tailStart ? changedIndex : null;
+          rebalanceSegment(tailStart, metas.length, boundaryStart, boundaryEnd, null, lockedIndex);
+        }
+
+        if (anchorIndices.length === 0 && metas.length > 0) {
+          const lockedIndex = changedIndex;
+          const boundaryStart = metas[0].startMinutes;
+          const boundaryEnd = metas[metas.length - 1].endMinutes;
+          rebalanceSegment(0, metas.length, boundaryStart, boundaryEnd, null, lockedIndex);
+        }
+
+        const nextTasksUpdates: Array<{
+          meta: RoutineMeta;
+          updates: Parameters<typeof apiUpdateTask>[1];
+        }> = [];
+
+        for (const meta of metas) {
+          const newRange = normalizeRange({
+            startMinutes: Math.round(meta.startMinutes),
+            endMinutes: Math.round(meta.endMinutes),
+          });
+
+          const hasChanged =
+            newRange.startMinutes !== meta.originalStart || newRange.endMinutes !== meta.originalEnd;
+
+          if (!hasChanged) {
+            continue;
+          }
+
+          const baseDescription = sanitizeDescription(meta.task.description ?? '');
+          const newDescription = injectTimeMetadata(baseDescription, newRange);
+
+          const updatePayload: Parameters<typeof apiUpdateTask>[1] = {
+            description: newDescription,
+          };
+
+          if (meta.task.reminder_at) {
+            const reminderDate = new Date(meta.task.reminder_at);
+            if (!Number.isNaN(reminderDate.getTime())) {
+              const reference = startOfDay(reminderDate);
+              const previousStartIso = minutesToDate(meta.originalStart, reference).toISOString();
+              if (isSameMinute(meta.task.reminder_at, previousStartIso)) {
+                updatePayload.reminder_at = minutesToDate(newRange.startMinutes, reference).toISOString();
+              }
+            }
+          }
+
+          nextTasksUpdates.push({ meta, updates: updatePayload });
+        }
+
+        let latestSnapshot = snapshot;
+        for (const entry of nextTasksUpdates) {
+          if (Object.keys(entry.updates).length === 0) {
+            continue;
+          }
+
+          try {
+            let updatedTask = await apiUpdateTask(entry.meta.task.id, entry.updates);
+            const { task: normalizedTask, reminderDate } = await ensureRoutineReminderUpToDate(updatedTask);
+            updatedTask = normalizedTask;
+
+            if (updatedTask.reminder_at && reminderDate) {
+              try {
+                await scheduleTaskReminder(updatedTask.id, updatedTask.title, reminderDate, {
+                  repeatDaily: !updatedTask.due_at,
+                });
+              } catch (scheduleError) {
+                console.warn('Failed to schedule adjusted routine reminder', updatedTask.title, scheduleError);
+              }
+            } else {
+              await cancelTaskReminder(updatedTask.id);
+            }
+
+            latestSnapshot = await applyTaskUpdate(updatedTask);
+          } catch (error) {
+            console.warn('Failed to auto-adjust routine schedule', entry.meta.task.id, error);
+          }
+        }
+
+        return latestSnapshot;
+      } finally {
+        rebalancingRef.current = false;
+      }
+    },
+    [applyTaskUpdate, ensureRoutineReminderUpToDate, sortTaskList, routineRangeMap],
+  );
+
   const handleCreateTask = useCallback(
     async (payload: Parameters<typeof apiCreateTask>[0]) => {
       let requestPayload = payload;
@@ -927,10 +1221,13 @@ export function useTasks() {
         await cancelTaskReminder(task.id);
       }
 
-      await applyTaskUpdate(task);
+      const nextTasks = await applyTaskUpdate(task);
+      if (!rebalancingRef.current && isRoutineTask(task)) {
+        await rebalanceRoutineSchedule(task, nextTasks);
+      }
       return task;
     },
-    [applyTaskUpdate, ensureRoutineReminderUpToDate],
+    [applyTaskUpdate, ensureRoutineReminderUpToDate, rebalanceRoutineSchedule],
   );
 
   const handleUpdateTask = useCallback(
@@ -972,10 +1269,13 @@ export function useTasks() {
         await cancelTaskReminder(task.id);
       }
 
-      await applyTaskUpdate(task);
+      const nextTasks = await applyTaskUpdate(task);
+      if (!rebalancingRef.current && isRoutineTask(task)) {
+        await rebalanceRoutineSchedule(task, nextTasks);
+      }
       return task;
     },
-    [applyTaskUpdate, ensureRoutineReminderUpToDate, state.tasks],
+    [applyTaskUpdate, ensureRoutineReminderUpToDate, state.tasks, rebalanceRoutineSchedule],
   );
 
   const handleToggleComplete = useCallback(
@@ -1000,10 +1300,13 @@ export function useTasks() {
           console.warn('Failed to update reminder', task.id, error);
         }
       }
-      await applyTaskUpdate(task);
+      const nextTasks = await applyTaskUpdate(task);
+      if (!rebalancingRef.current && isRoutineTask(task)) {
+        await rebalanceRoutineSchedule(task, nextTasks);
+      }
       return task;
     },
-    [applyTaskUpdate],
+    [applyTaskUpdate, rebalanceRoutineSchedule],
   );
 
   const handleDeleteTask = useCallback(

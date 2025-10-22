@@ -3,6 +3,7 @@ import type { DateTimePickerEvent } from '@react-native-community/datetimepicker
 import DateTimePicker, { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+    Alert,
     KeyboardAvoidingView,
     Modal,
     Platform,
@@ -236,18 +237,23 @@ export function TaskFormModal({
   };
 
   const handleSubmit = async () => {
-    const payload = buildPayload();
-    await onSubmit(payload, task ?? undefined);
-    if (!task) {
-      setTitle('');
-      setDescription('');
-      setReminderEnabled(false);
-      setReminderDate(null);
-      const start = defaultTaskStart();
-      setStartTime(start);
-      setEndTime(defaultTaskEnd(start));
+    try {
+      const payload = buildPayload();
+      await onSubmit(payload, task ?? undefined);
+      if (!task) {
+        setTitle('');
+        setDescription('');
+        setReminderEnabled(false);
+        setReminderDate(null);
+        const start = defaultTaskStart();
+        setStartTime(start);
+        setEndTime(defaultTaskEnd(start));
+      }
+      onClose();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save task';
+      Alert.alert('Create failed', message);
     }
-    onClose();
   };
 
   const handleReminderToggle = (value: boolean) => {

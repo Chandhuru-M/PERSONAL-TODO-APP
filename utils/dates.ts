@@ -6,6 +6,7 @@ export function formatDateTime(value: string | Date | null): string | null {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
+    hour12: true,
   }).format(date);
 }
 
@@ -17,6 +18,7 @@ export function formatTime(value: string | Date | null): string | null {
   return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: 'numeric',
+    hour12: true,
   }).format(date);
 }
 

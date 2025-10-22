@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: todo-scheduler-backend
+    env: node
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: PORT
+        value: 4000

@@ -1,0 +1,48 @@
+name: EAS Android Preview Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      apiBaseUrl:
+        description: "Optional EXPO_PUBLIC_API_URL override"
+        required: false
+      profile:
+        description: "EAS profile"
+        required: false
+        default: "preview"
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      - name: Install EAS CLI
+        run: npm i -g eas-cli
+
+      - name: EAS Android Build
+        env:
+          EAS_ACCESS_TOKEN: ${{ secrets.EAS_ACCESS_TOKEN }}
+          # If you set EXPO_PUBLIC_API_URL as a GitHub secret, pass it here.
+          EXPO_PUBLIC_API_URL: ${{ github.event.inputs.apiBaseUrl || secrets.EXPO_PUBLIC_API_URL }}
+        run: |
+          eas telemetry:off
+          eas build -p android --profile "${{ github.event.inputs.profile || 'preview' }}" --non-interactive
+
+      - name: Upload build info
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eas-build-android-info
+          path: ./build-*.json
+          if-no-files-found: ignore

@@ -7,9 +7,7 @@ import 'react-native-reanimated';
 import { Colors } from '@/constants/theme';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
+// Single-screen app (no tabs). No unstable_settings anchor needed.
 
 export default function RootLayout() {
   const navigationTheme = {
@@ -59,7 +57,7 @@ function RootNavigator() {
   return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(auth)" />
-      <Stack.Screen name="(tabs)" />
+      {/* The root index screen is implicit via app/index.tsx */}
       <Stack.Screen
         name="routines"
         options={{

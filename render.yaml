@@ -1,17 +1,14 @@
 services:
   - type: web
     name: todo-scheduler-backend
-    env: node
+    runtime: node
     rootDir: backend
-    buildCommand: npm install && npm run build
-    startCommand: npm run start
+    buildCommand: "npm ci --legacy-peer-deps && npm run build"
+    startCommand: "npm run start"
     plan: free
     autoDeploy: true
     healthCheckPath: /health
-    envVars:
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: PORT
-        value: 4000
+    # Set environment variables in the Render dashboard:
+    #  - SUPABASE_URL
+    #  - SUPABASE_SERVICE_ROLE_KEY
+    #  - PORT (e.g., 4000)

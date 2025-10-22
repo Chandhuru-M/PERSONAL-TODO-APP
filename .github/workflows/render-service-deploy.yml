@@ -1,0 +1,31 @@
+name: Render Service Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      serviceId:
+        description: 'Render Service ID (optional; defaults to secret)'
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Render Service Deploy
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ github.event.inputs.serviceId || secrets.RENDER_SERVICE_ID }}
+        run: |
+          if [ -z "$RENDER_API_KEY" ]; then
+            echo "Missing RENDER_API_KEY secret" >&2
+            exit 1
+          fi
+          if [ -z "$RENDER_SERVICE_ID" ]; then
+            echo "Missing RENDER_SERVICE_ID (input or secret)" >&2
+            exit 1
+          fi
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "https://api.render.com/v1/services/$RENDER_SERVICE_ID/deploys"
